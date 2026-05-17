@@ -1,8 +1,8 @@
 <script setup>
 import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 
-//const API_URL = 'http://192.168.50.101:8000/api'
-const API_URL = 'http://127.0.0.1:8000/api'
+//onst API_URL = 'http://127.0.0.1:8000/api'
+const API_URL = 'http://192.168.50.101:8000/api'
 const pestanaActual = ref('notas')
 const vistaConciliacion = ref('historial')
 
