@@ -1,8 +1,8 @@
 <script setup>
 import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 
-//onst API_URL = 'http://127.0.0.1:8000/api'
-const API_URL = 'http://192.168.50.101:8000/api'
+const API_URL = 'http://127.0.0.1:8000/api'
+//const API_URL = 'http://192.168.50.101:8000/api'
 const pestanaActual = ref('notas')
 const vistaConciliacion = ref('historial')
 
@@ -208,6 +208,54 @@ const anularPago = async () => {
 
 const nombreAcopiador = (id) => acopiadores.value.find(a => a.id === id)?.nombre || 'Desconocido'
 const formatoViajeSelect = (v) => `Viaje #${v.id} - ${nombreAcopiador(v.acopiador_id)} - ${new Date(v.fecha_entrada).toLocaleDateString()}`
+
+// ================= GESTIÓN DE PESADAS (ADMIN) =================
+const eliminarPesadaAdmin = async (id) => {
+  if (!confirm("🚨 ADVERTENCIA: Estás a punto de eliminar esta pesada.\nSi está en el cuarto frío desaparecerá.\n¿Deseas continuar?")) return
+  cargando.value = true
+  try {
+    await fetch(`${API_URL}/registros-bascula/${id}`, { method: 'DELETE' })
+    await fetchCatalogos()
+  } finally { cargando.value = false }
+}
+
+// Obtener propietario del viaje en la tabla de pesadas
+const obtenerDuenoViaje = (viaje_id) => {
+  const v = viajes.value.find(vi => vi.id === viaje_id)
+  if (!v) return 'Desconocido'
+  if (v.tipo_operacion === 'MAQUILA') {
+    return clientes.value.find(c => c.id === v.cliente_id)?.nombre || 'Cliente Borrado'
+  } else {
+    return acopiadores.value.find(a => a.id === v.acopiador_id)?.nombre || 'Acopiador Borrado'
+  }
+}
+
+const obtenerTipoViaje = (viaje_id) => {
+  const v = viajes.value.find(vi => vi.id === viaje_id)
+  return v ? v.tipo_operacion : ''
+}
+
+// ================= EDICIÓN DE PESADAS (ADMIN) =================
+const mostrarModalEdicionPesada = ref(false)
+const pesadaEditando = ref({})
+
+const abrirEdicionPesada = (pesada) => {
+  pesadaEditando.value = { ...pesada }
+  mostrarModalEdicionPesada.value = true
+}
+
+const guardarEdicionPesada = async () => {
+  cargando.value = true
+  try {
+    await fetch(`${API_URL}/registros-bascula/${pesadaEditando.value.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(pesadaEditando.value)
+    })
+    mostrarModalEdicionPesada.value = false
+    await fetchCatalogos()
+  } finally { cargando.value = false }
+}
 </script>
 
 <template>
@@ -218,9 +266,53 @@ const formatoViajeSelect = (v) => `Viaje #${v.id} - ${nombreAcopiador(v.acopiado
 
     <div class="flex flex-wrap gap-4 mb-8">
       <button @click="pestanaActual = 'notas'; vistaConciliacion = 'historial'" :class="{'bg-emerald-500 text-white': pestanaActual === 'notas', 'bg-white text-gray-600': pestanaActual !== 'notas'}" class="px-5 py-2.5 rounded-2xl text-sm transition shadow-sm border font-medium">📝 Captura de Notas</button>
+      <button @click="pestanaActual = 'tarimas'" :class="{'bg-emerald-500 text-white': pestanaActual === 'tarimas', 'bg-white text-gray-600': pestanaActual !== 'tarimas'}" class="px-5 py-2.5 rounded-2xl text-sm transition shadow-sm border font-medium">📦 Gestión de Pesadas</button>
       <button @click="pestanaActual = 'conciliacion'" :class="{'bg-emerald-500 text-white': pestanaActual === 'conciliacion', 'bg-white text-gray-600': pestanaActual !== 'conciliacion'}" class="px-5 py-2.5 rounded-2xl text-sm transition shadow-sm border font-medium">📊 Conciliación de Viajes</button>
       <button @click="pestanaActual = 'pagos'" :class="{'bg-emerald-500 text-white': pestanaActual === 'pagos', 'bg-white text-gray-600': pestanaActual !== 'pagos'}" class="px-5 py-2.5 rounded-2xl text-sm transition shadow-sm border font-medium">💰 Pagos</button>
       <button @click="pestanaActual = 'catalogos'" :class="{'bg-emerald-500 text-white': pestanaActual === 'catalogos', 'bg-white text-gray-600': pestanaActual !== 'catalogos'}" class="px-5 py-2.5 rounded-2xl text-sm transition shadow-sm border font-medium">📇 Catálogos Base</button>
+    </div>
+
+    <div v-if="pestanaActual === 'tarimas'" class="animate-fade-in space-y-6">
+      <div class="bg-white p-8 rounded-3xl shadow-sm border overflow-x-auto">
+        <h2 class="text-2xl font-light mb-6 text-gray-700">Historial de Pesadas (Tarimas)</h2>
+        <table class="min-w-full text-left text-sm text-gray-600">
+          <thead class="bg-gray-50 border-b">
+            <tr>
+              <th class="p-3">Viaje</th>
+              <th class="p-3">Propietario / Dueño</th>
+              <th class="p-3">Tarima</th>
+              <th class="p-3">Fruta</th>
+              <th class="p-3 text-center">Cajas</th>
+              <th class="p-3 text-right">Peso Bruto</th>
+              <th class="p-3 text-right">Tara</th>
+              <th class="p-3 text-right text-emerald-600">Peso Neto</th>
+              <th class="p-3 text-center">Acciones</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="r in registrosBascula" :key="r.id" class="border-b hover:bg-gray-50">
+              <td class="p-3 font-bold text-blue-600">
+                Viaje #{{ r.viaje_id }}
+                <span class="block text-[10px] text-gray-400 font-black uppercase" :class="obtenerTipoViaje(r.viaje_id) === 'MAQUILA' ? 'text-purple-500' : ''">
+                  {{ obtenerTipoViaje(r.viaje_id) }}
+                </span>
+              </td>
+              <td class="p-3 font-bold text-gray-800">{{ obtenerDuenoViaje(r.viaje_id) }}</td>
+              <td class="p-3 font-bold text-gray-600">T-#{{ r.numero_tarima }}</td>
+              <td class="p-3">{{ r.fruta_nombre || 'N/A' }}</td>
+              <td class="p-3 text-center font-medium">{{ r.cantidad_cajas }}</td>
+              <td class="p-3 text-right">{{ formatearPeso(r.peso_bruto) }} kg</td>
+              <td class="p-3 text-right text-orange-500">{{ formatearPeso(r.tara_total) }} kg</td>
+              <td class="p-3 text-right font-black text-emerald-600">{{ formatearPeso(r.peso_neto) }} kg</td>
+              <td class="p-3 text-center flex justify-center gap-2">
+                <button @click="abrirEdicionPesada(r)" class="text-blue-500 hover:scale-110 transition bg-blue-50 px-3 py-1.5 rounded-lg font-bold">✏️ Editar</button>
+                <button @click="eliminarPesadaAdmin(r.id)" class="text-red-500 hover:scale-110 transition bg-red-50 px-3 py-1.5 rounded-lg font-bold">🗑️ Eliminar</button>
+              </td>
+            </tr>
+            <tr v-if="registrosBascula.length === 0"><td colspan="9" class="p-6 text-center text-gray-400">No hay pesadas registradas en el sistema.</td></tr>
+          </tbody>
+        </table>
+      </div>
     </div>
 
     <div v-if="pestanaActual === 'catalogos'" class="space-y-8 animate-fade-in">
@@ -552,6 +644,24 @@ const formatoViajeSelect = (v) => `Viaje #${v.id} - ${nombreAcopiador(v.acopiado
       </div>
     </div>
 
+    <div v-if="mostrarModalEdicionPesada" class="fixed inset-0 bg-gray-900 bg-opacity-60 flex items-center justify-center z-[60] p-4 backdrop-blur-sm">
+      <div class="bg-white rounded-3xl w-full max-w-md p-8 shadow-2xl">
+        <h2 class="text-2xl font-bold mb-6 text-gray-800">Corregir Pesada #{{pesadaEditando.numero_tarima}}</h2>
+        <div class="space-y-4">
+          <div><label class="text-xs font-bold text-gray-400">TIPO DE FRUTA</label><select v-model="pesadaEditando.tipo_fruta_id" class="w-full border p-3 rounded-xl outline-none text-gray-700 font-medium"><option v-for="f in tiposFruta" :value="f.id" :key="f.id">{{f.nombre}}</option></select></div>
+          <div class="grid grid-cols-2 gap-4">
+            <div><label class="text-xs font-bold text-gray-400">PESO BRUTO</label><input type="number" step="0.5" v-model="pesadaEditando.peso_bruto" class="w-full border p-3 rounded-xl font-bold"></div>
+            <div><label class="text-xs font-bold text-gray-400">CAJAS</label><input type="number" v-model="pesadaEditando.cantidad_cajas" class="w-full border p-3 rounded-xl font-bold"></div>
+            <div><label class="text-xs font-bold text-orange-400">TARA CAJA</label><input type="number" step="0.01" v-model="pesadaEditando.tara_caja" class="w-full border p-3 rounded-xl font-bold text-orange-600 bg-orange-50"></div>
+            <div><label class="text-xs font-bold text-orange-400">TARA TARIMA</label><input type="number" step="0.1" v-model="pesadaEditando.tara_tarima" class="w-full border p-3 rounded-xl font-bold text-orange-600 bg-orange-50"></div>
+          </div>
+        </div>
+        <div class="flex gap-4 mt-8">
+          <button @click="mostrarModalEdicionPesada = false" class="flex-1 bg-gray-100 py-3 rounded-xl font-bold text-gray-600 hover:bg-gray-200 transition">Cancelar</button>
+          <button @click="guardarEdicionPesada" class="flex-1 bg-blue-500 text-white font-bold py-3 rounded-xl hover:bg-blue-600 transition shadow-md">Guardar Cambios</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 

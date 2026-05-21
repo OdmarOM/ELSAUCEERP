@@ -1,8 +1,8 @@
 <script setup>
 import { ref, onMounted, onUnmounted, computed } from 'vue'
 
-//const API_URL = 'http://127.0.0.1:8000/api'
- const API_URL = 'http://192.168.50.101:8000/api'
+const API_URL = 'http://127.0.0.1:8000/api'
+ //const API_URL = 'http://192.168.50.101:8000/api'
 const moduloActual = ref('bascula') // 'bascula' o 'frio'
 const vistaActual = ref('lista')
 
@@ -287,6 +287,69 @@ const guardarEdicionTarima = async () => {
     await fetchCatalogos()
   } finally { cargando.value = false }
 }
+
+const pesadaEditandoViaje = ref({})
+const mostrarModalEdicionPesada = ref(false)
+
+const abrirEdicionPesada = (pesada) => {
+  pesadaEditandoViaje.value = { ...pesada }
+  mostrarModalEdicionPesada.value = true
+}
+
+const guardarEdicionPesada = async () => {
+  cargando.value = true
+  try {
+    await fetch(`${API_URL}/registros-bascula/${pesadaEditandoViaje.value.id}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(pesadaEditandoViaje.value)
+    })
+    mostrarModalEdicionPesada.value = false
+    await fetchCatalogos()
+  } finally { cargando.value = false }
+}
+
+const eliminarPesada = async (id) => {
+  if (!confirm("¿Estás seguro de eliminar esta pesada? Se borrará permanentemente.")) return
+  cargando.value = true
+  try {
+    await fetch(`${API_URL}/registros-bascula/${id}`, { method: 'DELETE' })
+    await fetchCatalogos()
+  } finally { cargando.value = false }
+}
+
+// Edición de Viaje
+const mostrarModalEdicionViaje = ref(false)
+const viajeEditando = ref({})
+
+const abrirEdicionViaje = () => {
+  viajeEditando.value = { ...viajeSeleccionado.value }
+  mostrarModalEdicionViaje.value = true
+}
+
+const guardarEdicionViaje = async () => {
+  if (viajeEditando.value.tipo_operacion === 'ACOPIO' && !viajeEditando.value.acopiador_id) return alert("Selecciona un acopiador");
+  if (viajeEditando.value.tipo_operacion === 'MAQUILA' && !viajeEditando.value.cliente_id) return alert("Selecciona un cliente");
+
+  cargando.value = true
+  try {
+    const payload = {
+      tipo_operacion: viajeEditando.value.tipo_operacion,
+      placa: viajeEditando.value.tipo_operacion === 'ACOPIO' ? viajeEditando.value.placa : 'N/A', 
+      acopiador_id: viajeEditando.value.tipo_operacion === 'ACOPIO' ? parseInt(viajeEditando.value.acopiador_id) : null,
+      cliente_id: viajeEditando.value.tipo_operacion === 'MAQUILA' ? parseInt(viajeEditando.value.cliente_id) : null
+    }
+    
+    await fetch(`${API_URL}/viajes/${viajeEditando.value.id}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+    })
+    
+    mostrarModalEdicionViaje.value = false
+    await fetchCatalogos()
+    // Actualizar la vista actual con los nuevos datos
+    viajeSeleccionado.value = viajes.value.find(v => v.id === viajeEditando.value.id)
+  } finally { cargando.value = false }
+}
+
 </script>
 
 <template>
@@ -417,7 +480,10 @@ const guardarEdicionTarima = async () => {
             <div class="flex items-center gap-3"><h2 class="text-2xl font-light">Viaje <span class="font-medium font-mono">#{{ viajeSeleccionado.id }}</span></h2><span :class="viajeSeleccionado.tipo_operacion === 'MAQUILA' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'" class="px-3 py-1 rounded-md text-xs font-bold">{{ viajeSeleccionado.tipo_operacion }}</span></div>
             <p class="text-sm text-gray-500 mt-2 font-bold">{{ nombreResponsableViaje(viajeSeleccionado) }}</p>
           </div>
-          <div v-if="viajeSeleccionado.estado === 'ACTIVO'"><button @click="cerrarViaje" class="bg-red-50 text-red-600 px-5 py-2.5 rounded-2xl font-bold">🔒 Finalizar Recepción</button></div>
+          <div v-if="viajeSeleccionado.estado === 'ACTIVO'" class="flex gap-3">
+            <button @click="abrirEdicionViaje" class="bg-blue-50 text-blue-600 px-5 py-2.5 rounded-2xl font-bold hover:bg-blue-100 transition">✏️ Editar Viaje</button>
+            <button @click="cerrarViaje" class="bg-red-50 text-red-600 px-5 py-2.5 rounded-2xl font-bold hover:bg-red-100 transition">🔒 Finalizar</button>
+          </div>
         </div>
 
         <div v-if="viajeSeleccionado.estado === 'ACTIVO'" class="bg-white p-8 rounded-3xl border max-w-2xl mx-auto shadow-sm">
@@ -477,12 +543,18 @@ const guardarEdicionTarima = async () => {
         <div class="bg-white rounded-3xl border overflow-hidden max-w-2xl mx-auto shadow-sm">
           <div class="p-5 border-b bg-gray-50"><h3 class="font-bold text-gray-700">Resumen de Pesadas ({{ registrosDelViaje.length }})</h3></div>
           <table class="min-w-full text-left text-sm">
-            <thead class="bg-gray-50 text-gray-400 text-[10px] uppercase font-black"><tr><th class="p-4">Tarima</th><th class="p-4 text-center">Cajas</th><th class="p-4 text-right">Peso Neto</th></tr></thead>
+            <thead class="bg-gray-50 text-gray-400 text-[10px] uppercase font-black">
+              <tr><th class="p-4">Tarima</th><th class="p-4 text-center">Cajas</th><th class="p-4 text-right">Peso Neto</th><th class="p-4 text-center">Acciones</th></tr>
+            </thead>
             <tbody>
-              <tr v-for="r in registrosDelViaje" :key="r.id" class="border-b">
+              <tr v-for="r in registrosDelViaje" :key="r.id" class="border-b hover:bg-gray-50">
                 <td class="p-4 font-bold text-gray-700">#{{ r.numero_tarima }}</td>
                 <td class="p-4 text-center font-medium text-gray-600">{{ r.cantidad_cajas }}</td>
                 <td class="p-4 text-right font-black text-emerald-600">{{ formatearPeso(r.peso_neto) }} kg</td>
+                <td class="p-4 text-center">
+                  <button @click="abrirEdicionPesada(r)" class="text-blue-500 hover:scale-110 transition mr-3">✏️</button>
+                  <button @click="eliminarPesada(r.id)" class="text-red-500 hover:scale-110 transition">🗑️</button>
+                </td>
               </tr>
             </tbody>
           </table>
@@ -556,7 +628,52 @@ const guardarEdicionTarima = async () => {
       </div>
     </div>
 
+    <div v-if="mostrarModalEdicionPesada" class="fixed inset-0 bg-gray-900 bg-opacity-60 flex items-center justify-center z-[60] p-4 backdrop-blur-sm">
+      <div class="bg-white rounded-3xl w-full max-w-md p-8 shadow-2xl">
+        <h2 class="text-2xl font-bold mb-6 text-gray-800">Corregir Pesada #{{pesadaEditandoViaje.numero_tarima}}</h2>
+        <div class="space-y-4">
+          <div><label class="text-xs font-bold text-gray-400">TIPO DE FRUTA</label><select v-model="pesadaEditandoViaje.tipo_fruta_id" class="w-full border p-3 rounded-xl outline-none text-gray-700 font-medium"><option v-for="f in tiposFruta" :value="f.id" :key="f.id">{{f.nombre}}</option></select></div>
+          <div class="grid grid-cols-2 gap-4">
+            <div><label class="text-xs font-bold text-gray-400">PESO BRUTO</label><input type="number" step="0.5" v-model="pesadaEditandoViaje.peso_bruto" class="w-full border p-3 rounded-xl font-bold"></div>
+            <div><label class="text-xs font-bold text-gray-400">CAJAS</label><input type="number" v-model="pesadaEditandoViaje.cantidad_cajas" class="w-full border p-3 rounded-xl font-bold"></div>
+            <div><label class="text-xs font-bold text-orange-400">TARA CAJA</label><input type="number" step="0.01" v-model="pesadaEditandoViaje.tara_caja" class="w-full border p-3 rounded-xl font-bold text-orange-600 bg-orange-50"></div>
+            <div><label class="text-xs font-bold text-orange-400">TARA TARIMA</label><input type="number" step="0.1" v-model="pesadaEditandoViaje.tara_tarima" class="w-full border p-3 rounded-xl font-bold text-orange-600 bg-orange-50"></div>
+          </div>
+        </div>
+        <div class="flex gap-4 mt-8">
+          <button @click="mostrarModalEdicionPesada = false" class="flex-1 bg-gray-100 py-3 rounded-xl font-bold text-gray-600 hover:bg-gray-200">Cancelar</button>
+          <button @click="guardarEdicionPesada" class="flex-1 bg-blue-500 text-white font-bold py-3 rounded-xl hover:bg-blue-600 shadow-md">Guardar</button>
+        </div>
+      </div>
+    </div>
+
   </div>
+
+  <div v-if="mostrarModalEdicionViaje" class="fixed inset-0 bg-gray-900 bg-opacity-50 flex items-center justify-center z-[60] p-4 backdrop-blur-sm">
+      <div class="bg-white rounded-3xl w-full max-w-lg p-8 shadow-2xl">
+        <h2 class="text-2xl font-bold mb-6 text-gray-800">Editar Viaje #{{viajeEditando.id}}</h2>
+        <div class="space-y-5">
+          <div>
+            <label class="block text-xs font-bold text-gray-400 uppercase mb-1">Tipo de Operación</label>
+            <select v-model="viajeEditando.tipo_operacion" class="w-full border border-gray-300 p-4 rounded-2xl bg-gray-50 font-black text-gray-800 outline-none">
+              <option value="ACOPIO">ACOPIO (Compra)</option>
+              <option value="MAQUILA">MAQUILA (Servicio)</option>
+            </select>
+          </div>
+          <div v-if="viajeEditando.tipo_operacion === 'ACOPIO'" class="space-y-5 border-t border-gray-100 pt-5">
+            <div><label class="block text-xs font-bold text-gray-400 uppercase mb-1">Acopiador</label><select v-model="viajeEditando.acopiador_id" class="w-full border border-gray-300 p-4 rounded-2xl outline-none font-bold"><option v-for="a in acopiadores" :value="a.id" :key="a.id">{{ a.nombre }}</option></select></div>
+            <div><label class="block text-xs font-bold text-gray-400 uppercase mb-1">Placa</label><input v-model="viajeEditando.placa" class="w-full border border-gray-300 p-4 rounded-2xl uppercase outline-none font-bold" /></div>
+          </div>
+          <div v-if="viajeEditando.tipo_operacion === 'MAQUILA'" class="space-y-5 border-t border-gray-100 pt-5">
+            <div><label class="block text-xs font-bold text-purple-500 uppercase mb-1">Cliente</label><select v-model="viajeEditando.cliente_id" class="w-full border border-purple-200 p-4 rounded-2xl outline-none font-bold"><option v-for="c in clientes" :value="c.id" :key="c.id">{{ c.nombre }}</option></select></div>
+          </div>
+        </div>
+        <div class="mt-8 flex gap-4">
+          <button @click="mostrarModalEdicionViaje = false" class="flex-1 bg-gray-100 py-4 rounded-2xl font-bold text-gray-600 hover:bg-gray-200">Cancelar</button>
+          <button @click="guardarEdicionViaje" class="flex-1 bg-blue-500 text-white py-4 rounded-2xl font-bold shadow-md hover:bg-blue-600">Guardar Cambios</button>
+        </div>
+      </div>
+    </div>
 </template>
 
 <style>

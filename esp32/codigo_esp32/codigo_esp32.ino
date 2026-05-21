@@ -3,11 +3,11 @@
 #include <HardwareSerial.h>
 
 // --- CONFIGURACIÓN DE RED ---
-const char* ssid = "Sauce_esp32";
-const char* password = "esp32123";
+const char* ssid = "avo.sauce2";
+const char* password = "El.Sauce2508";
 
 // ¡IMPORTANTE! Cambia la X por la IP de la computadora donde corre FastAPI
-const String API_URL = "http://192.168.1.X:8000/api/bascula/leer";
+const String API_URL = "http://192.168.50.101:8000/api/bascula/leer";
 
 // --- CONFIGURACIÓN BÁSCULA RHINO ---
 #define RX_PIN 16 

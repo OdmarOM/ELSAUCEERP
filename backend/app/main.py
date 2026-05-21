@@ -349,6 +349,7 @@ def registrar_tarima(tarima: dict):
         conn.close()
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @app.get("/api/registros-bascula")
 def listar_tarimas():
     conn = get_db()
@@ -574,20 +575,88 @@ def deshacer_conciliacion(id: int):
     finally:
         conn.close()
 
-# Editar una tarima (Para procesar Maquila)
+# Editar una tarima (Para procesar Maquila o Corregir Errores)
 @app.put("/api/registros-bascula/{id}")
 def editar_tarima(id: int, data: dict):
     conn = get_db()
     cursor = conn.cursor()
-    # Permitimos cambiar el peso y el tipo de fruta de la tarima
-    cursor.execute("""
-        UPDATE registrobascula 
-        SET peso_neto = ?, tipo_fruta_id = ? 
-        WHERE id = ?
-    """, (data.get('peso_neto'), data.get('tipo_fruta_id'), id))
-    conn.commit()
-    conn.close()
-    return {"status": "ok", "mensaje": "Tarima actualizada"}
+    try:
+        # Obtener datos actuales para no sobreescribir con vacíos
+        cursor.execute("SELECT * FROM registrobascula WHERE id = ?", (id,))
+        actual = dict(cursor.fetchone())
+        
+        # Mezclar datos nuevos con los actuales
+        tipo_fruta_id = data.get('tipo_fruta_id', actual['tipo_fruta_id'])
+        cantidad_cajas = data.get('cantidad_cajas', actual['cantidad_cajas'])
+        peso_bruto = data.get('peso_bruto', actual['peso_bruto'])
+        tara_caja = data.get('tara_caja', actual['tara_caja'])
+        tara_tarima = data.get('tara_tarima', actual['tara_tarima'])
+        
+        # Si envían peso_neto directo (como en el Cuarto Frío), lo usamos. 
+        # Si envían peso_bruto (como en la edición completa), lo recalculamos.
+        if 'peso_bruto' in data and 'tara_caja' in data:
+            tara_total = tara_tarima + (tara_caja * cantidad_cajas)
+            peso_neto = peso_bruto - tara_total
+        else:
+            peso_neto = data.get('peso_neto', actual['peso_neto'])
+            tara_total = actual['tara_total']
+            
+        promedio = peso_neto / cantidad_cajas if cantidad_cajas > 0 else 0
+
+        cursor.execute("""
+            UPDATE registrobascula 
+            SET peso_neto = ?, tipo_fruta_id = ?, cantidad_cajas = ?, 
+                peso_bruto = ?, tara_caja = ?, tara_tarima = ?, 
+                tara_total = ?, promedio_peso_caja = ?
+            WHERE id = ?
+        """, (peso_neto, tipo_fruta_id, cantidad_cajas, peso_bruto, tara_caja, tara_tarima, tara_total, promedio, id))
+        conn.commit()
+        return {"status": "ok", "mensaje": "Tarima actualizada"}
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
+
+# Editar Viajes
+@app.put("/api/viajes/{id}")
+def editar_viaje(id: int, data: dict):
+    conn = get_db()
+    cursor = conn.cursor()
+    try:
+        acopiador_id = data.get('acopiador_id') if data.get('acopiador_id') else None
+        cliente_id = data.get('cliente_id') if data.get('cliente_id') else None
+        
+        cursor.execute("""
+            UPDATE viaje 
+            SET tipo_operacion = ?, acopiador_id = ?, cliente_id = ?, placa = ?
+            WHERE id = ?
+        """, (data['tipo_operacion'], acopiador_id, cliente_id, data.get('placa', ''), id))
+        conn.commit()
+        return {"status": "ok", "mensaje": "Viaje actualizado"}
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
+
+# Eliminar una pesada/tarima
+@app.delete("/api/registros-bascula/{id}")
+def eliminar_tarima(id: int):
+    conn = get_db()
+    cursor = conn.cursor()
+    try:
+        # Si está en el cuarto frío, la sacamos primero para evitar errores
+        cursor.execute("DELETE FROM cuartofrio WHERE tarima_id = ?", (id,))
+        # Eliminamos el registro de la báscula
+        cursor.execute("DELETE FROM registrobascula WHERE id = ?", (id,))
+        conn.commit()
+        return {"status": "ok", "mensaje": "Pesada eliminada correctamente"}
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
 # ==========================================
 # ANULAR PAGO (Deshacer)
 # ==========================================
