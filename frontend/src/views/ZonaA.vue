@@ -2,7 +2,8 @@
 import { ref, onMounted, onUnmounted, computed } from 'vue'
 
 //const API_URL = 'http://127.0.0.1:8000/api'
-const API_URL = 'http://192.168.50.101:8000/api'
+//const API_URL = 'http://192.168.50.101:8000/api'
+const API_URL = '/api'
 
 const moduloActual = ref('bascula') // 'bascula' o 'frio'
 const vistaActual = ref('lista')
