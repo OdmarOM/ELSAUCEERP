@@ -1,11 +1,11 @@
 <script setup>
 import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 
-const API_URL = 'http://127.0.0.1:8000/api'
-//const API_URL = 'http://192.168.50.101:8000/api'
+//const API_URL = 'http://127.0.0.1:8000/api'
+const API_URL = 'http://192.168.50.101:8000/api'
 const pestanaActual = ref('notas')
+const subPestanaNotas = ref('captura') 
 const vistaConciliacion = ref('historial')
-
 const cargando = ref(false)
 
 const acopiadores = ref([])
@@ -19,7 +19,6 @@ const pagos = ref([])
 
 let intervaloCarga = null
 
-// Formateo estricto para coma flotante
 const formatearPeso = (valor) => parseFloat(valor || 0).toFixed(2)
 
 // ================= MODELOS =================
@@ -28,10 +27,12 @@ const nuevoProveedor = ref({ nombre: '', contacto: '' })
 const nuevoCliente = ref({ nombre: '', contacto: '' })
 const nuevoTipoFruta = ref({ nombre: '', descripcion: '' })
 
-const nuevaNota = ref({ folio: '', proveedor_id: '', tipo_fruta_id: '', cantidad_cajas: '', peso_neto: '', precio_kg: '', total_monetario: 0 })
+// NOTA CON FECHA MANUAL Y CÁLCULOS
+const nuevaNota = ref({ fecha: new Date().toISOString().split('T')[0], folio: '', proveedor_id: '', tipo_fruta_id: '', cantidad_cajas: '', tara_tarima: '', tara_caja: '', peso_bruto: '', peso_neto: 0, precio_kg: '', total_monetario: 0 })
 const nuevoPago = ref({ proveedor_id: '', folio_pago: '', fecha_pago: new Date().toISOString().split('T')[0], metodo_pago: 'TRANSFERENCIA', monto_total: 0, nota_ids: [] })
 
 const fechaFiltroConciliacion = ref(new Date().toISOString().split('T')[0])
+const fechaFiltroNotasHistorial = ref(new Date().toISOString().split('T')[0])
 
 // Modales
 const mostrarModalPago = ref(false)
@@ -44,11 +45,29 @@ const editandoNota = ref(null)
 const mostrarModalEdicionNota = ref(false)
 
 const mostrarModalEdicionCatalogo = ref(false)
-const tipoCatalogoEdicion = ref('') // 'acopiadores', 'proveedores', 'clientes', 'tipos-fruta'
+const tipoCatalogoEdicion = ref('') 
 const itemEditando = ref({})
 
-watch([() => nuevaNota.value.peso_neto, () => nuevaNota.value.precio_kg], ([neto, precio]) => {
-  nuevaNota.value.total_monetario = ((parseFloat(neto) || 0) * (parseFloat(precio) || 0)).toFixed(2)
+const mostrarModalAdminViaje = ref(false)
+const viajeAdminEditando = ref({})
+
+// LÓGICA DE CÁLCULO EN NUEVA NOTA (AUTO)
+watch([
+  () => nuevaNota.value.peso_bruto,
+  () => nuevaNota.value.cantidad_cajas,
+  () => nuevaNota.value.tara_tarima,
+  () => nuevaNota.value.tara_caja,
+  () => nuevaNota.value.precio_kg
+], () => {
+  const bruto = parseFloat(nuevaNota.value.peso_bruto) || 0
+  const cajas = parseInt(nuevaNota.value.cantidad_cajas) || 0
+  const t_tarima = parseFloat(nuevaNota.value.tara_tarima) || 0
+  const t_caja = parseFloat(nuevaNota.value.tara_caja) || 0
+  const precio = parseFloat(nuevaNota.value.precio_kg) || 0
+
+  const tara_total = t_tarima + (t_caja * cajas)
+  nuevaNota.value.peso_neto = Math.max(0, bruto - tara_total).toFixed(2)
+  nuevaNota.value.total_monetario = (nuevaNota.value.peso_neto * precio).toFixed(2)
 })
 
 watch(() => nuevoPago.value.nota_ids, (idsSeleccionados) => {
@@ -78,24 +97,19 @@ const notasDelProveedorSeleccionado = computed(() => notasPendientes.value.filte
 const viajesCerradosParaConciliar = computed(() => viajes.value.filter(v => v.estado === 'CERRADO' && v.tipo_operacion === 'ACOPIO'))
 const viajesConciliadosFiltrados = computed(() => viajes.value.filter(v => v.estado === 'CONCILIADO' && v.fecha_entrada.startsWith(fechaFiltroConciliacion.value)).sort((a, b) => b.id - a.id))
 
-// ================= LÓGICA ACORDEÓN DEUDAS =================
-const proveedorExpandido = ref(null)
+const notasHistorialFiltradas = computed(() => {
+  return notasOrdenadas.value.filter(n => n.fecha && n.fecha.startsWith(fechaFiltroNotasHistorial.value))
+})
 
 const deudasAgrupadas = computed(() => {
   const grupos = {}
   notasPendientes.value.forEach(n => {
     if (!grupos[n.proveedor_id]) {
-      grupos[n.proveedor_id] = { 
-        id: n.proveedor_id, 
-        nombre: n.proveedor_nombre, 
-        totalDeuda: 0, 
-        notas: [] 
-      }
+      grupos[n.proveedor_id] = { id: n.proveedor_id, nombre: n.proveedor_nombre, totalDeuda: 0, notas: [] }
     }
     grupos[n.proveedor_id].notas.push(n)
     grupos[n.proveedor_id].totalDeuda += parseFloat(n.total_monetario)
   })
-  // Ordenamos para que los proveedores con mayor deuda aparezcan arriba
   return Object.values(grupos).sort((a, b) => b.totalDeuda - a.totalDeuda)
 })
 
@@ -107,13 +121,11 @@ const eliminarCatalogo = async (endpoint, id) => {
   if(!confirm("¿Eliminar registro?")) return;
   cargando.value = true; try { await fetch(`${API_URL}/${endpoint}/${id}`, { method: 'DELETE' }); await fetchCatalogos(); } finally { cargando.value = false }
 }
-
 const abrirEdicionCatalogo = (tipo, item) => {
   tipoCatalogoEdicion.value = tipo
   itemEditando.value = { ...item }
   mostrarModalEdicionCatalogo.value = true
 }
-
 const guardarEdicionCatalogo = async () => {
   cargando.value = true
   try {
@@ -127,23 +139,30 @@ const guardarEdicionCatalogo = async () => {
 const agregarNota = async () => {
   if (!nuevaNota.value.folio) return alert("El folio es obligatorio para identificar la nota.")
   cargando.value = true
-  try { await fetch(`${API_URL}/notas`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({...nuevaNota.value, viaje_id: null}) }); nuevaNota.value = { folio: '', proveedor_id: '', tipo_fruta_id: '', cantidad_cajas: '', peso_neto: '', precio_kg: '', total_monetario: 0 }; await fetchCatalogos() } finally { cargando.value = false }
+  try { 
+    await fetch(`${API_URL}/notas`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({...nuevaNota.value, viaje_id: null}) }); 
+    nuevaNota.value = { fecha: new Date().toISOString().split('T')[0], folio: '', proveedor_id: '', tipo_fruta_id: '', cantidad_cajas: '', tara_tarima: '', tara_caja: '', peso_bruto: '', peso_neto: 0, precio_kg: '', total_monetario: 0 }; 
+    await fetchCatalogos() 
+  } finally { cargando.value = false }
 }
 const eliminarNota = async (id) => { 
   if(!confirm("¿Eliminar nota?")) return;
   cargando.value = true; try { await fetch(`${API_URL}/notas/${id}`, { method: 'DELETE' }); await fetchCatalogos() } finally { cargando.value = false } 
 }
-const prepararEdicionNota = (nota) => { editandoNota.value = { ...nota }; mostrarModalEdicionNota.value = true }
+const prepararEdicionNota = (nota) => { 
+  editandoNota.value = { ...nota } 
+  if (editandoNota.value.fecha) editandoNota.value.fecha = editandoNota.value.fecha.split('T')[0]
+  mostrarModalEdicionNota.value = true 
+}
 const guardarCambiosNota = async () => {
   cargando.value = true
   try {
-    editandoNota.value.total_monetario = (editandoNota.value.peso_neto * editandoNota.value.precio_kg).toFixed(2)
     await fetch(`${API_URL}/notas/${editandoNota.value.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(editandoNota.value) })
     mostrarModalEdicionNota.value = false; await fetchCatalogos()
   } finally { cargando.value = false }
 }
 
-// ================= CONCILIACIÓN =================
+// ================= CONCILIACIÓN Y VIAJES =================
 const viajeAConciliarId = ref('')
 const notasSeleccionadasParaConciliar = ref([])
 const detallesViajeAConciliar = computed(() => {
@@ -159,11 +178,37 @@ const iniciarNuevaConciliacion = () => { vistaConciliacion.value = 'formulario';
 const guardarConciliacion = async () => {
   if (!viajeAConciliarId.value || notasSeleccionadasParaConciliar.value.length === 0) return alert("Selecciona viaje y notas.")
   cargando.value = true
-  try { await fetch(`${API_URL}/viajes/${viajeAConciliarId.value}/conciliar`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ nota_ids: notasSeleccionadasParaConciliar.value, peso_fisico: detallesViajeAConciliar.value.pesoFisicoTotal, peso_teorico: pesoTeoricoSeleccionado.value, diferencia: diferenciaConciliacion.value }) }); vistaConciliacion.value = 'historial'; await fetchCatalogos() } finally { cargando.value = false }
+  try { await fetch(`${API_URL}/viajes/${viajeAConciliarId.value}/conciliar`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ nota_ids: notasSeleccionadasParaConciliar.value, peso_fisico: detallesViajeAConciliar.value.pesoFisicoTotal, peso_teorico: pesoTeoricoSeleccionado.value, difference: diferenciaConciliacion.value }) }); vistaConciliacion.value = 'historial'; await fetchCatalogos() } finally { cargando.value = false }
 }
 const deshacerConciliacion = async (viajeId) => {
   if (!confirm("¿Seguro que quieres deshacer esta conciliación? Las notas quedarán libres nuevamente.")) return
   cargando.value = true; try { await fetch(`${API_URL}/viajes/${viajeId}/deshacer-conciliacion`, { method: 'POST' }); await fetchCatalogos() } finally { cargando.value = false }
+}
+
+// Función para abrir la edición del Viaje desde la tabla de PESADAS (Gestión de Tarimas)
+const abrirAdminViajePorTarima = (viajeId) => {
+  const v = viajes.value.find(vi => vi.id === viajeId)
+  if(v) {
+    if (v.estado === 'CONCILIADO') {
+      alert("Bloqueado: El viaje asociado a esta pesada ya está CONCILIADO contablemente.\n\nPara poder modificar quién es el Acopiador o Cliente, debes ir a la pestaña 'Conciliación de Viajes' y Deshacer la conciliación primero.")
+      return
+    }
+    viajeAdminEditando.value = { ...v }
+    mostrarModalAdminViaje.value = true
+  } else {
+    alert("Error: No se encontró el viaje.")
+  }
+}
+
+const guardarAdminViaje = async () => {
+  cargando.value = true
+  try {
+    const res = await fetch(`${API_URL}/viajes/${viajeAdminEditando.value.id}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(viajeAdminEditando.value)
+    })
+    if(!res.ok) { const err = await res.json(); alert(err.detail || "Error al modificar viaje") } 
+    else { mostrarModalAdminViaje.value = false; await fetchCatalogos() }
+  } finally { cargando.value = false }
 }
 
 // ================= PAGOS =================
@@ -173,12 +218,10 @@ const registrarPago = async () => {
   cargando.value = true
   try { await fetch(`${API_URL}/pagos`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(nuevoPago.value) }); mostrarModalPago.value = false; await fetchCatalogos() } finally { cargando.value = false }
 }
-
 const notasDelPagoSeleccionado = computed(() => {
   if (!pagoSeleccionado.value) return []
   return notas.value.filter(n => n.pago_id === pagoSeleccionado.value.id)
 })
-
 const abrirDetallePago = (pago) => {
   pagoSeleccionado.value = pago
   pagoEditando.value = { ...pago }
@@ -186,42 +229,18 @@ const abrirDetallePago = (pago) => {
   modoEdicionPago.value = false
   mostrarModalDetallePago.value = true
 }
-
 const guardarEdicionPago = async () => {
   cargando.value = true
-  try {
-    await fetch(`${API_URL}/pagos/${pagoEditando.value.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(pagoEditando.value) })
-    mostrarModalDetallePago.value = false
-    await fetchCatalogos()
-  } finally { cargando.value = false }
+  try { await fetch(`${API_URL}/pagos/${pagoEditando.value.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(pagoEditando.value) }); mostrarModalDetallePago.value = false; await fetchCatalogos() } finally { cargando.value = false }
 }
-
 const anularPago = async () => {
-  if (!confirm("🚨 ¿ESTÁS SEGURO DE ANULAR ESTE PAGO?\n\nEl pago se eliminará y las facturas/notas asociadas volverán a aparecer como deudas pendientes por liquidar.")) return
+  if (!confirm("🚨 ¿ESTÁS SEGURO DE ANULAR ESTE PAGO?\n\nEl pago se eliminará y las facturas/notas asociadas volverán a aparecer deudas pendientes.")) return
   cargando.value = true
-  try {
-    await fetch(`${API_URL}/pagos/${pagoSeleccionado.value.id}`, { method: 'DELETE' })
-    mostrarModalDetallePago.value = false
-    await fetchCatalogos()
-  } finally { cargando.value = false }
+  try { await fetch(`${API_URL}/pagos/${pagoSeleccionado.value.id}`, { method: 'DELETE' }); mostrarModalDetallePago.value = false; await fetchCatalogos() } finally { cargando.value = false }
 }
 
-const nombreAcopiador = (id) => acopiadores.value.find(a => a.id === id)?.nombre || 'Desconocido'
-const formatoViajeSelect = (v) => `Viaje #${v.id} - ${nombreAcopiador(v.acopiador_id)} - ${new Date(v.fecha_entrada).toLocaleDateString()}`
-
-// ================= GESTIÓN DE PESADAS (ADMIN) =================
-const eliminarPesadaAdmin = async (id) => {
-  if (!confirm("🚨 ADVERTENCIA: Estás a punto de eliminar esta pesada.\nSi está en el cuarto frío desaparecerá.\n¿Deseas continuar?")) return
-  cargando.value = true
-  try {
-    await fetch(`${API_URL}/registros-bascula/${id}`, { method: 'DELETE' })
-    await fetchCatalogos()
-  } finally { cargando.value = false }
-}
-
-// Obtener propietario del viaje en la tabla de pesadas
-const obtenerDuenoViaje = (viaje_id) => {
-  const v = viajes.value.find(vi => vi.id === viaje_id)
+// ================= HELPERS Y BÚSQUEDAS =================
+const nombreResponsableViaje = (v) => {
   if (!v) return 'Desconocido'
   if (v.tipo_operacion === 'MAQUILA') {
     return clientes.value.find(c => c.id === v.cliente_id)?.nombre || 'Cliente Borrado'
@@ -230,12 +249,29 @@ const obtenerDuenoViaje = (viaje_id) => {
   }
 }
 
+const formatoViajeSelect = (v) => `Viaje #${v.id} - ${nombreResponsableViaje(v)} - ${new Date(v.fecha_entrada).toLocaleDateString()}`
+
+const obtenerDuenoViaje = (viaje_id) => {
+  const v = viajes.value.find(vi => vi.id === viaje_id)
+  return nombreResponsableViaje(v)
+}
+
 const obtenerTipoViaje = (viaje_id) => {
   const v = viajes.value.find(vi => vi.id === viaje_id)
   return v ? v.tipo_operacion : ''
 }
 
 // ================= EDICIÓN DE PESADAS (ADMIN) =================
+const eliminarPesadaAdmin = async (id) => {
+  if (!confirm("🚨 ADVERTENCIA: Estás a punto de eliminar esta pesada.\nSi está en el cuarto frío desaparecerá.\n¿Deseas continuar?")) return
+  cargando.value = true
+  try {
+    const res = await fetch(`${API_URL}/registros-bascula/${id}`, { method: 'DELETE' })
+    if(!res.ok) { const err = await res.json(); alert(err.detail || "Error en eliminación") } 
+    else { await fetchCatalogos() }
+  } finally { cargando.value = false }
+}
+
 const mostrarModalEdicionPesada = ref(false)
 const pesadaEditando = ref({})
 
@@ -247,13 +283,9 @@ const abrirEdicionPesada = (pesada) => {
 const guardarEdicionPesada = async () => {
   cargando.value = true
   try {
-    await fetch(`${API_URL}/registros-bascula/${pesadaEditando.value.id}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(pesadaEditando.value)
-    })
-    mostrarModalEdicionPesada.value = false
-    await fetchCatalogos()
+    const res = await fetch(`${API_URL}/registros-bascula/${pesadaEditando.value.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(pesadaEditando.value) })
+    if(!res.ok) { const err = await res.json(); alert(err.detail || "Error al actualizar") } 
+    else { mostrarModalEdicionPesada.value = false; await fetchCatalogos() }
   } finally { cargando.value = false }
 }
 </script>
@@ -265,11 +297,92 @@ const guardarEdicionPesada = async () => {
     <div class="flex justify-between items-center mb-8"><h1 class="text-4xl font-light tracking-tight text-gray-800 mt-1">Administración y Finanzas</h1><span class="text-xs font-bold text-gray-400 bg-white px-4 py-2 border rounded-full shadow-sm flex items-center"><span class="w-2 h-2 rounded-full bg-emerald-500 mr-2 animate-pulse"></span> ZONA B</span></div>
 
     <div class="flex flex-wrap gap-4 mb-8">
-      <button @click="pestanaActual = 'notas'; vistaConciliacion = 'historial'" :class="{'bg-emerald-500 text-white': pestanaActual === 'notas', 'bg-white text-gray-600': pestanaActual !== 'notas'}" class="px-5 py-2.5 rounded-2xl text-sm transition shadow-sm border font-medium">📝 Captura de Notas</button>
+      <button @click="pestanaActual = 'notas'" :class="{'bg-emerald-500 text-white': pestanaActual === 'notas', 'bg-white text-gray-600': pestanaActual !== 'notas'}" class="px-5 py-2.5 rounded-2xl text-sm transition shadow-sm border font-medium">📝 Captura y Visualización de Notas</button>
       <button @click="pestanaActual = 'tarimas'" :class="{'bg-emerald-500 text-white': pestanaActual === 'tarimas', 'bg-white text-gray-600': pestanaActual !== 'tarimas'}" class="px-5 py-2.5 rounded-2xl text-sm transition shadow-sm border font-medium">📦 Gestión de Pesadas</button>
-      <button @click="pestanaActual = 'conciliacion'" :class="{'bg-emerald-500 text-white': pestanaActual === 'conciliacion', 'bg-white text-gray-600': pestanaActual !== 'conciliacion'}" class="px-5 py-2.5 rounded-2xl text-sm transition shadow-sm border font-medium">📊 Conciliación de Viajes</button>
+      <button @click="pestanaActual = 'conciliacion'; vistaConciliacion = 'historial'" :class="{'bg-emerald-500 text-white': pestanaActual === 'conciliacion', 'bg-white text-gray-600': pestanaActual !== 'conciliacion'}" class="px-5 py-2.5 rounded-2xl text-sm transition shadow-sm border font-medium">📊 Conciliación de Viajes</button>
       <button @click="pestanaActual = 'pagos'" :class="{'bg-emerald-500 text-white': pestanaActual === 'pagos', 'bg-white text-gray-600': pestanaActual !== 'pagos'}" class="px-5 py-2.5 rounded-2xl text-sm transition shadow-sm border font-medium">💰 Pagos</button>
       <button @click="pestanaActual = 'catalogos'" :class="{'bg-emerald-500 text-white': pestanaActual === 'catalogos', 'bg-white text-gray-600': pestanaActual !== 'catalogos'}" class="px-5 py-2.5 rounded-2xl text-sm transition shadow-sm border font-medium">📇 Catálogos Base</button>
+    </div>
+
+    <div v-if="pestanaActual === 'notas'" class="space-y-6 animate-fade-in">
+      <div class="flex gap-4 border-b pb-3">
+        <button @click="subPestanaNotas = 'captura'" :class="subPestanaNotas === 'captura' ? 'border-b-2 border-emerald-500 font-bold text-emerald-600' : 'text-gray-400 font-medium'" class="pb-1 text-sm px-2">Capturar Nueva Nota</button>
+        <button @click="subPestanaNotas = 'historial'" :class="subPestanaNotas === 'historial' ? 'border-b-2 border-emerald-500 font-bold text-emerald-600' : 'text-gray-400 font-medium'" class="pb-1 text-sm px-2">Visualizador e Historial General</button>
+      </div>
+
+      <div v-if="subPestanaNotas === 'captura'" class="space-y-8">
+        <div class="bg-white p-8 rounded-3xl shadow-sm border">
+          <h2 class="text-xl font-medium mb-4 text-gray-700">Registrar Nota Detallada de Proveedor</h2>
+          <div class="grid grid-cols-1 md:grid-cols-4 gap-6 mb-6">
+            <div><label class="block text-sm text-gray-500 mb-1">Fecha Emisión</label><input type="date" v-model="nuevaNota.fecha" class="w-full border border-gray-200 p-3.5 rounded-2xl text-sm outline-none font-bold text-gray-700" /></div>
+            <div><label class="block text-sm text-gray-500 mb-1">Folio Físico</label><input v-model="nuevaNota.folio" placeholder="Ej. A-1234" class="w-full border border-gray-200 p-3.5 rounded-2xl text-sm outline-none font-bold text-emerald-700 uppercase" /></div>
+            <div><label class="block text-sm text-gray-500 mb-1">Proveedor</label><select v-model="nuevaNota.proveedor_id" class="w-full border border-gray-200 p-3.5 rounded-2xl text-sm outline-none"><option value="" disabled>Selecciona...</option><option v-for="p in proveedores" :value="p.id" :key="p.id">{{ p.nombre }}</option></select></div>
+            <div><label class="block text-sm text-gray-500 mb-1">Tipo de Fruta</label><select v-model="nuevaNota.tipo_fruta_id" class="w-full border border-gray-200 p-3.5 rounded-2xl text-sm outline-none"><option value="" disabled>Selecciona...</option><option v-for="f in tiposFruta" :value="f.id" :key="f.id">{{ f.nombre }}</option></select></div>
+          </div>
+          <div class="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6 border-t pt-6">
+            <div><label class="block text-sm text-gray-500 mb-1">Peso Bruto (kg)</label><input type="number" v-model="nuevaNota.peso_bruto" class="w-full border p-3.5 rounded-2xl text-sm outline-none font-medium" /></div>
+            <div><label class="block text-sm text-gray-500 mb-1">Cajas</label><input type="number" v-model="nuevaNota.cantidad_cajas" class="w-full border p-3.5 rounded-2xl text-sm outline-none font-medium" /></div>
+            <div><label class="block text-sm text-gray-500 mb-1">Tara Tarima (kg)</label><input type="number" step="0.1" v-model="nuevaNota.tara_tarima" placeholder="21.0" class="w-full border p-3.5 rounded-2xl text-sm outline-none font-medium" /></div>
+            <div><label class="block text-sm text-gray-500 mb-1">Tara Caja (kg)</label><input type="number" step="0.01" v-model="nuevaNota.tara_caja" placeholder="1.7" class="w-full border p-3.5 rounded-2xl text-sm outline-none font-medium" /></div>
+            <div><label class="block text-sm text-gray-500 mb-1">Precio ($/kg)</label><input type="number" step="0.01" v-model="nuevaNota.precio_kg" class="w-full border p-3.5 rounded-2xl text-sm outline-none font-bold" /></div>
+          </div>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-6 bg-gray-50 p-4 rounded-2xl border mb-6">
+            <div class="flex justify-between items-center"><span class="text-sm text-gray-500 font-bold">Peso Neto Calculado:</span><span class="text-xl font-black text-gray-800">{{ nuevaNota.peso_neto }} kg</span></div>
+            <div class="flex justify-between items-center"><span class="text-sm text-gray-500 font-bold">Total Liquidación Automático:</span><span class="text-xl font-black text-emerald-600">${{ nuevaNota.total_monetario }}</span></div>
+          </div>
+          <button @click="agregarNota" :disabled="cargando" class="bg-emerald-500 text-white px-8 py-3.5 rounded-2xl text-sm font-medium hover:bg-emerald-600 disabled:opacity-50 shadow-sm">Guardar Nota Calculada</button>
+        </div>
+
+        <div class="bg-white p-8 rounded-3xl shadow-sm border overflow-x-auto">
+          <h2 class="text-xl font-medium mb-4 text-gray-700">Bandeja de Notas Libres (Por Conciliar)</h2>
+          <table class="min-w-full text-left text-sm text-gray-600">
+            <thead class="bg-gray-50 border-b"><tr><th class="p-3">Fecha</th><th class="p-3">Folio</th><th class="p-3">Proveedor</th><th class="p-3">Fruta</th><th class="p-3 text-right">P. Bruto</th><th class="p-3 text-right">P. Neto</th><th class="p-3 text-right">Total</th><th class="p-3 text-right">Acción</th></tr></thead>
+            <tbody>
+              <tr v-for="n in notasLibres" :key="n.id" class="border-b hover:bg-gray-50">
+                <td class="p-3 text-gray-500 font-medium text-xs">{{ n.fecha ? new Date(n.fecha).toLocaleDateString() : 'N/A' }}</td>
+                <td class="p-3 font-mono font-bold text-gray-800">{{ n.folio || 'S/F' }}</td>
+                <td class="p-3 font-medium text-gray-800">{{ n.proveedor_nombre }}</td><td class="p-3">{{ n.fruta_nombre }}</td>
+                <td class="p-3 text-right">{{ formatearPeso(n.peso_bruto) }}</td>
+                <td class="p-3 text-right font-semibold text-blue-600">{{ formatearPeso(n.peso_neto) }}</td><td class="p-3 text-right font-bold text-emerald-600">${{ n.total_monetario }}</td>
+                <td class="p-3 text-right">
+                  <button @click="prepararEdicionNota(n)" class="text-blue-500 font-bold mr-3 hover:text-blue-700">✏️</button>
+                  <button @click="eliminarNota(n.id)" :disabled="cargando" class="text-red-500 hover:text-red-700 font-medium">❌</button>
+                </td>
+              </tr>
+              <tr v-if="notasLibres.length === 0"><td colspan="8" class="p-6 text-center text-gray-400">No hay notas libres pendientes.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div v-if="subPestanaNotas === 'historial'" class="space-y-6">
+        <div class="flex justify-between items-center bg-white p-6 rounded-3xl border shadow-sm">
+          <div><h2 class="text-lg font-bold text-gray-800">Visualizador General de Notas</h2><p class="text-xs text-gray-400 uppercase font-black">Auditoría por fecha de emisión</p></div>
+          <input type="date" v-model="fechaFiltroNotasHistorial" class="border p-3 rounded-xl outline-none font-bold text-gray-700" />
+        </div>
+        <div class="bg-white p-8 rounded-3xl border overflow-x-auto shadow-sm">
+          <table class="min-w-full text-left text-sm text-gray-600">
+            <thead class="bg-gray-50 border-b"><tr><th class="p-3">Folio</th><th class="p-3">Viaje Asociado</th><th class="p-3">Proveedor</th><th class="p-3">Fruta</th><th class="p-3 text-center">Cajas</th><th class="p-3 text-right">Peso Neto</th><th class="p-3 text-right">Total</th><th class="p-3 text-center">Estado Pago</th></tr></thead>
+            <tbody>
+              <tr v-for="n in notasHistorialFiltradas" :key="n.id" class="border-b hover:bg-gray-50">
+                <td class="p-3 font-mono font-bold text-gray-800">{{ n.folio }}</td>
+                <td class="p-3 font-bold text-blue-600">{{ n.viaje_id ? 'Viaje #' + n.viaje_id : 'LIBRE (Sin Conciliar)' }}</td>
+                <td class="p-3 font-medium">{{ n.proveedor_nombre }}</td>
+                <td class="p-3">{{ n.fruta_nombre }}</td>
+                <td class="p-3 text-center">{{ n.cantidad_cajas }}</td>
+                <td class="p-3 text-right font-medium">{{ formatearPeso(n.peso_neto) }} kg</td>
+                <td class="p-3 text-right font-black text-emerald-600">${{ n.total_monetario }}</td>
+                <td class="p-3 text-center">
+                  <span :class="n.estado_pago === 'PAGADO' ? 'bg-emerald-100 text-emerald-700' : 'bg-orange-100 text-orange-700'" class="px-2.5 py-1 rounded-full text-xs font-black">
+                    {{ n.estado_pago }}
+                  </span>
+                </td>
+              </tr>
+              <tr v-if="notasHistorialFiltradas.length === 0"><td colspan="8" class="p-6 text-center text-gray-400">No se encontraron notas registradas en esta fecha seleccionada.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
 
     <div v-if="pestanaActual === 'tarimas'" class="animate-fade-in space-y-6">
@@ -305,13 +418,94 @@ const guardarEdicionPesada = async () => {
               <td class="p-3 text-right text-orange-500">{{ formatearPeso(r.tara_total) }} kg</td>
               <td class="p-3 text-right font-black text-emerald-600">{{ formatearPeso(r.peso_neto) }} kg</td>
               <td class="p-3 text-center flex justify-center gap-2">
-                <button @click="abrirEdicionPesada(r)" class="text-blue-500 hover:scale-110 transition bg-blue-50 px-3 py-1.5 rounded-lg font-bold">✏️ Editar</button>
-                <button @click="eliminarPesadaAdmin(r.id)" class="text-red-500 hover:scale-110 transition bg-red-50 px-3 py-1.5 rounded-lg font-bold">🗑️ Eliminar</button>
+                <button @click="abrirAdminViajePorTarima(r.viaje_id)" class="text-purple-600 hover:scale-110 transition bg-purple-50 px-3 py-1.5 rounded-lg font-bold" title="Modificar Acopiador/Cliente del Viaje">🚚 Viaje</button>
+                <button @click="abrirEdicionPesada(r)" class="text-blue-500 hover:scale-110 transition bg-blue-50 px-3 py-1.5 rounded-lg font-bold" title="Editar pesos y fruta de la tarima">📦 Tarima</button>
+                <button @click="eliminarPesadaAdmin(r.id)" class="text-red-500 hover:scale-110 transition bg-red-50 px-3 py-1.5 rounded-lg font-bold">🗑️</button>
               </td>
             </tr>
-            <tr v-if="registrosBascula.length === 0"><td colspan="9" class="p-6 text-center text-gray-400">No hay pesadas registradas en el sistema.</td></tr>
           </tbody>
         </table>
+      </div>
+    </div>
+
+    <div v-if="pestanaActual === 'conciliacion'" class="animate-fade-in">
+       <div v-if="vistaConciliacion === 'historial'" class="space-y-6">
+        <div class="flex justify-between items-center bg-white p-6 rounded-3xl border shadow-sm"><input type="date" v-model="fechaFiltroConciliacion" class="border p-3 rounded-xl outline-none font-bold text-gray-700" /><button @click="iniciarNuevaConciliacion" class="bg-emerald-500 text-white px-8 py-3.5 rounded-2xl font-bold shadow-sm">+ Conciliar Nuevo</button></div>
+        <div class="bg-white p-8 rounded-3xl border overflow-x-auto shadow-sm">
+          <table class="min-w-full text-left text-sm text-gray-600"><thead class="bg-gray-50 border-b"><tr><th class="p-3">Viaje</th><th class="p-3">Tipo</th><th class="p-3">Responsable Operativo</th><th class="p-3 text-right">Físico</th><th class="p-3 text-right">Teórico</th><th class="p-3 text-right">Diferencia</th><th class="p-3 text-center">Gestión</th></tr></thead>
+            <tbody>
+              <tr v-for="v in viajes" :key="v.id" v-show="v.estado === 'CONCILIADO' && v.fecha_entrada.startsWith(fechaFiltroConciliacion)" class="border-b hover:bg-gray-50">
+                <td class="p-3 font-bold">#{{ v.id }}</td>
+                <td class="p-3"><span :class="v.tipo_operacion === 'MAQUILA' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'" class="px-2 py-0.5 rounded text-xs font-bold">{{ v.tipo_operacion }}</span></td>
+                <td class="p-3 font-medium text-gray-800">{{ nombreResponsableViaje(v) }}</td>
+                <td class="p-3 text-right text-blue-600 font-bold">{{ formatearPeso(v.peso_total_fisico) }} kg</td>
+                <td class="p-3 text-right text-orange-600 font-bold">{{ formatearPeso(v.peso_total_teorico) }} kg</td>
+                <td class="p-3 text-right font-black" :class="v.diferencia_peso >= 0 ? 'text-emerald-500' : 'text-red-500'">{{ v.diferencia_peso > 0 ? '+' : ''}}{{ formatearPeso(v.diferencia_peso) }} kg</td>
+                <td class="p-3 text-center flex items-center justify-center gap-2">
+                  <button @click="deshacerConciliacion(v.id)" class="bg-orange-50 text-orange-600 border border-orange-200 px-3 py-1.5 rounded-xl text-xs font-bold hover:bg-orange-100">⚠️ Deshacer Conciliación</button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      
+      <div v-if="vistaConciliacion === 'formulario'" class="space-y-6">
+        <button @click="vistaConciliacion = 'historial'" class="text-gray-500 font-medium">← Cancelar y Volver</button>
+        <div class="bg-white p-6 rounded-3xl border shadow-sm"><select v-model="viajeAConciliarId" class="w-full border p-4 rounded-2xl text-lg font-medium outline-none"><option value="" disabled>-- Elige un viaje cerrado --</option><option v-for="v in viajesCerradosParaConciliar" :value="v.id" :key="v.id">{{ formatoViajeSelect(v) }}</option></select></div>
+        <div v-if="detallesViajeAConciliar" class="grid grid-cols-2 gap-6">
+          <div class="bg-white p-6 rounded-3xl border text-center shadow-sm"><span class="text-blue-600 block mb-1 font-bold">Peso Físico (Báscula)</span><span class="text-4xl font-black text-blue-700">{{ formatearPeso(detallesViajeAConciliar.pesoFisicoTotal) }} kg</span></div>
+          <div class="bg-white p-6 rounded-3xl border text-center shadow-sm"><span class="text-orange-600 block mb-1 font-bold">Peso Teórico (Notas)</span><span class="text-4xl font-black text-orange-700">{{ formatearPeso(pesoTeoricoSeleccionado) }} kg</span></div>
+        </div>
+        <div v-if="detallesViajeAConciliar" class="bg-white p-6 rounded-3xl border shadow-sm">
+          <h3 class="font-bold text-gray-700 mb-4">Selecciona las notas que amparan este viaje:</h3>
+          <div class="space-y-2 max-h-60 overflow-y-auto pr-2">
+            <label v-for="n in notasLibres" :key="n.id" class="flex items-center p-4 bg-gray-50 rounded-xl cursor-pointer border hover:bg-emerald-50 transition">
+              <input type="checkbox" :value="n.id" v-model="notasSeleccionadasParaConciliar" class="w-6 h-6 text-emerald-500 mr-4 rounded">
+              <div class="flex-1"><p class="text-sm font-bold text-gray-800">Folio: {{n.folio}} | {{ n.proveedor_nombre }}</p></div><div class="font-bold text-orange-600 text-lg">{{ formatearPeso(n.peso_neto) }} kg</div>
+            </label>
+          </div>
+        </div>
+        <div v-if="detallesViajeAConciliar" class="bg-gray-800 p-8 rounded-3xl text-white flex flex-col md:flex-row justify-between items-center gap-6 shadow-md">
+          <div><span class="text-gray-400 text-sm block mb-1">Diferencia Físico vs Teórico</span><div class="text-4xl font-black tracking-tight" :class="diferenciaConciliacion >= 0 ? 'text-emerald-400' : 'text-red-400'">{{ diferenciaConciliacion > 0 ? '+' : '' }}{{ formatearPeso(diferenciaConciliacion) }} kg</div></div>
+          <button @click="guardarConciliacion" :disabled="cargando" class="w-full md:w-auto bg-emerald-500 hover:bg-emerald-400 px-10 py-4 rounded-2xl font-bold text-lg transition shadow-lg">Aprobar Conciliación</button>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="pestanaActual === 'pagos'" class="space-y-8 animate-fade-in">
+      <div class="flex justify-between items-center"><h2 class="text-2xl font-light text-gray-700">Gestión de Pagos</h2><button @click="abrirModalPagos" class="bg-emerald-500 text-white px-6 py-3 rounded-2xl font-bold shadow-sm">+ Registrar Pago</button></div>
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+        <div class="bg-white p-6 rounded-3xl border overflow-x-auto shadow-sm">
+          <h3 class="text-lg font-bold text-orange-600 mb-4 border-b pb-2">Deudas por Proveedor</h3>
+          <div class="bg-orange-50 border border-orange-100 p-5 rounded-2xl mb-4 flex justify-between items-center"><span class="text-orange-800 font-bold">Deuda Global Total:</span><span class="text-3xl font-black text-orange-600">${{ totalDeudaPendiente }}</span></div>
+          <div class="space-y-3">
+            <div v-for="prov in deudasAgrupadas" :key="prov.id" class="border rounded-2xl overflow-hidden shadow-sm">
+              <button @click="proveedorExpandido = proveedorExpandido === prov.id ? null : prov.id" class="w-full flex justify-between items-center p-4 bg-gray-50 hover:bg-gray-100 transition"><span class="font-bold text-gray-800 text-lg">{{ prov.nombre }}</span><div class="flex items-center gap-4"><span class="text-xl font-black text-orange-600">${{ prov.totalDeuda.toFixed(2) }}</span><span class="text-gray-400 font-bold text-sm">{{ proveedorExpandido === prov.id ? '▲' : '▼' }}</span></div></button>
+              <div v-if="proveedorExpandido === prov.id" class="p-4 bg-white border-t border-gray-100 animate-fade-in">
+                <table class="w-full text-sm text-left">
+                  <thead><tr class="text-gray-400 border-b"><th class="pb-2">Folio Nota</th><th class="pb-2">Fruta</th><th class="pb-2 text-right">Monto</th></tr></thead>
+                  <tbody>
+                    <tr v-for="nota in prov.notas" :key="nota.id" class="border-b last:border-0 hover:bg-gray-50 transition">
+                      <td class="py-2 font-mono font-bold text-gray-700">{{ nota.folio }}</td><td class="py-2">{{ nota.fruta_nombre }}</td><td class="py-2 text-right font-bold text-gray-800">${{ nota.total_monetario }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="bg-white p-6 rounded-3xl border overflow-x-auto shadow-sm">
+          <h3 class="text-lg font-bold text-emerald-600 mb-4 border-b pb-2">Últimos Pagos Realizados</h3>
+          <table class="min-w-full text-left text-sm text-gray-600">
+            <thead><tr><th class="pb-2">Fecha</th><th class="pb-2">Proveedor</th><th class="pb-2 text-right">Monto</th><th class="pb-2 text-center">Acción</th></tr></thead>
+            <tbody>
+              <tr v-for="p in pagos.slice().reverse()" :key="p.id" class="border-t hover:bg-gray-50 transition">
+                <td class="py-3 text-xs font-bold text-gray-500">{{ p.fecha_pago ? new Date(p.fecha_pago).toLocaleDateString() : 'N/A' }}</td><td class="py-3 font-medium">{{ p.proveedor_nombre }} <span class="block text-[10px] text-gray-400 font-mono">{{ p.folio_pago }}</span></td><td class="py-3 text-right font-bold text-emerald-600">${{ p.monto_total }}</td><td class="py-3 text-center"><button @click="abrirDetallePago(p)" class="bg-blue-50 text-blue-600 px-3 py-1.5 rounded-lg text-xs font-bold hover:bg-blue-100 transition">Ver Detalle</button></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
 
@@ -326,7 +520,7 @@ const guardarEdicionPesada = async () => {
           <ul class="text-sm text-gray-600 space-y-2 max-h-40 overflow-y-auto">
             <li v-for="a in acopiadores" :key="a.id" class="flex justify-between border-b pb-2 items-center">
               <div><span class="font-medium text-gray-800">{{a.nombre}}</span><span class="block text-xs text-gray-400">{{a.telefono || 'Sin tel'}}</span></div>
-              <div><button @click="abrirEdicionCatalogo('acopiadores', a)" class="text-blue-500 mr-3 text-lg hover:scale-110 transition">✏️</button><button @click="eliminarCatalogo('acopiadores', a.id)" class="text-red-500 text-sm font-bold hover:text-red-700">X</button></div>
+              <div><button @click="abrirEdicionCatalogo('acopiadores', a)" class="text-blue-500 mr-3 text-lg hover:scale-110 transition">✏️</button><button @click="eliminarCatalogo('acopiadores', a.id)" class="text-red-500 text-sm font-bold">X</button></div>
             </li>
           </ul>
         </div>
@@ -339,7 +533,7 @@ const guardarEdicionPesada = async () => {
           <ul class="text-sm text-gray-600 space-y-2 max-h-40 overflow-y-auto">
             <li v-for="p in proveedores" :key="p.id" class="flex justify-between border-b pb-2 items-center">
               <div><span class="font-medium text-gray-800">{{p.nombre}}</span><span class="block text-xs text-gray-400">{{p.contacto || 'Sin contacto'}}</span></div>
-              <div><button @click="abrirEdicionCatalogo('proveedores', p)" class="text-blue-500 mr-3 text-lg hover:scale-110 transition">✏️</button><button @click="eliminarCatalogo('proveedores', p.id)" class="text-red-500 text-sm font-bold hover:text-red-700">X</button></div>
+              <div><button @click="abrirEdicionCatalogo('proveedores', p)" class="text-blue-500 mr-3 text-lg hover:scale-110 transition">✏️</button><button @click="eliminarCatalogo('proveedores', p.id)" class="text-red-500 text-sm font-bold">X</button></div>
             </li>
           </ul>
         </div>
@@ -352,184 +546,54 @@ const guardarEdicionPesada = async () => {
           <ul class="text-sm text-gray-600 space-y-2 max-h-40 overflow-y-auto">
             <li v-for="c in clientes" :key="c.id" class="flex justify-between border-b pb-2 items-center">
               <div><span class="font-medium text-gray-800">{{c.nombre}}</span><span class="block text-xs text-gray-400">{{c.contacto || 'Sin contacto'}}</span></div>
-              <div><button @click="abrirEdicionCatalogo('clientes', c)" class="text-blue-500 mr-3 text-lg hover:scale-110 transition">✏️</button><button @click="eliminarCatalogo('clientes', c.id)" class="text-red-500 text-sm font-bold hover:text-red-700">X</button></div>
+              <div><button @click="abrirEdicionCatalogo('clientes', c)" class="text-blue-500 mr-3 text-lg hover:scale-110 transition">✏️</button><button @click="eliminarCatalogo('clientes', c.id)" class="text-red-500 text-sm font-bold">X</button></div>
             </li>
           </ul>
         </div>
-        <div class="bg-white p-6 rounded-3xl shadow-sm border md:col-span-2 lg:col-span-3">
-          <h2 class="text-lg font-bold mb-4 text-gray-700">Tipos de Fruta</h2>
-          <form @submit.prevent="agregarCatalogo('tipos-fruta', nuevoTipoFruta, nuevoTipoFruta, {nombre:'', descripcion:''})" class="flex gap-2 mb-4">
-            <input v-model="nuevoTipoFruta.nombre" placeholder="Fruta" class="border p-3 rounded-xl w-1/3 text-sm outline-none" required />
-            <input v-model="nuevoTipoFruta.descripcion" placeholder="Descripción" class="border p-3 rounded-xl w-1/2 text-sm outline-none" />
-            <button type="submit" class="bg-emerald-500 text-white px-6 rounded-xl text-sm font-medium hover:bg-emerald-600 transition">Agregar Fruta</button>
-          </form>
-          <div class="flex gap-4 flex-wrap">
-            <span v-for="f in tiposFruta" :key="f.id" class="bg-gray-50 px-4 py-2 rounded-full text-sm flex items-center gap-3 border shadow-sm">
-              <span class="font-medium">{{f.nombre}}</span> 
-              <button @click="abrirEdicionCatalogo('tipos-fruta', f)" class="text-blue-500 text-sm hover:scale-110">✏️</button>
-              <button @click="eliminarCatalogo('tipos-fruta', f.id)" class="text-red-500 font-bold hover:text-red-700">X</button>
-            </span>
+      </div>
+    </div>
+
+    <div v-if="mostrarModalAdminViaje" class="fixed inset-0 bg-gray-900 bg-opacity-50 flex items-center justify-center z-[60] p-4 backdrop-blur-sm">
+      <div class="bg-white rounded-3xl w-full max-w-lg p-8 shadow-2xl">
+        <h2 class="text-2xl font-bold mb-6 text-gray-800">Modificar Datos del Viaje #{{viajeAdminEditando.id}}</h2>
+        <div class="space-y-5">
+          <div>
+            <label class="block text-xs font-bold text-gray-400 uppercase mb-1">Tipo de Operación</label>
+            <select v-model="viajeAdminEditando.tipo_operacion" class="w-full border border-gray-300 p-4 rounded-2xl bg-gray-50 font-bold">
+              <option value="ACOPIO">ACOPIO (Compra)</option>
+              <option value="MAQUILA">MAQUILA (Servicio)</option>
+            </select>
           </div>
+          <div v-if="viajeAdminEditando.tipo_operacion === 'ACOPIO'" class="space-y-5 border-t pt-4">
+            <div><label class="block text-xs font-bold text-gray-400 uppercase mb-1">Cambiar Acopiador</label><select v-model="viajeAdminEditando.acopiador_id" class="w-full border p-4 rounded-2xl font-medium"><option v-for="a in acopiadores" :value="a.id" :key="a.id">{{ a.nombre }}</option></select></div>
+            <div><label class="block text-xs font-bold text-gray-400 uppercase mb-1">Placas</label><input v-model="viajeAdminEditando.placa" class="w-full border p-4 rounded-2xl uppercase font-bold" /></div>
+          </div>
+          <div v-if="viajeAdminEditando.tipo_operacion === 'MAQUILA'" class="space-y-5 border-t pt-4">
+            <div><label class="block text-xs font-bold text-purple-500 uppercase mb-1">Cambiar Cliente</label><select v-model="viajeAdminEditando.cliente_id" class="w-full border p-4 rounded-2xl font-medium"><option v-for="c in clientes" :value="c.id" :key="c.id">{{ c.nombre }}</option></select></div>
+          </div>
+        </div>
+        <div class="mt-8 flex gap-4">
+          <button @click="mostrarModalAdminViaje = false" class="flex-1 bg-gray-100 py-4 rounded-2xl font-bold text-gray-600 hover:bg-gray-200">Cancelar</button>
+          <button @click="guardarAdminViaje" class="flex-1 bg-blue-500 text-white py-4 rounded-2xl font-bold shadow-md hover:bg-blue-600">Guardar Cambios</button>
         </div>
       </div>
     </div>
 
-    <div v-if="pestanaActual === 'notas'" class="space-y-8 animate-fade-in">
-      <div class="bg-white p-8 rounded-3xl shadow-sm border">
-        <h2 class="text-xl font-medium mb-4 text-gray-700">Registrar Nueva Nota</h2>
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
-          <div><label class="block text-sm text-gray-500 mb-1">Folio Físico</label><input v-model="nuevaNota.folio" placeholder="Ej. A-1234" class="w-full border border-gray-200 p-3.5 rounded-2xl text-sm outline-none focus:ring-2 focus:ring-emerald-400 uppercase font-bold text-emerald-700" /></div>
-          <div><label class="block text-sm text-gray-500 mb-1">Proveedor</label><select v-model="nuevaNota.proveedor_id" class="w-full border border-gray-200 p-3.5 rounded-2xl text-sm outline-none"><option value="" disabled>Selecciona...</option><option v-for="p in proveedores" :value="p.id" :key="p.id">{{ p.nombre }}</option></select></div>
-          <div><label class="block text-sm text-gray-500 mb-1">Tipo de Fruta</label><select v-model="nuevaNota.tipo_fruta_id" class="w-full border border-gray-200 p-3.5 rounded-2xl text-sm outline-none"><option value="" disabled>Selecciona...</option><option v-for="f in tiposFruta" :value="f.id" :key="f.id">{{ f.nombre }}</option></select></div>
+    <div v-if="mostrarModalEdicionNota" class="fixed inset-0 bg-gray-900 bg-opacity-60 flex items-center justify-center p-4 z-50 backdrop-blur-sm">
+      <div class="bg-white p-8 rounded-3xl w-full max-w-lg shadow-2xl">
+        <h2 class="text-2xl font-bold mb-6 text-gray-800">Corregir Nota #{{editandoNota.id}}</h2>
+        <div class="grid grid-cols-2 gap-4">
+          <div class="col-span-2 md:col-span-1"><label class="text-xs font-bold text-gray-500 uppercase ml-1">Fecha</label><input type="date" v-model="editandoNota.fecha" class="border border-gray-300 p-3.5 rounded-2xl w-full font-bold"></div>
+          <div class="col-span-2 md:col-span-1"><label class="text-xs font-bold text-gray-500 uppercase ml-1">Folio Físico</label><input v-model="editandoNota.folio" class="border border-gray-300 p-3.5 rounded-2xl w-full font-bold uppercase"></div>
+          <div><label class="text-xs font-bold text-gray-500 uppercase ml-1">Peso Bruto</label><input type="number" v-model="editandoNota.peso_bruto" class="border border-gray-300 p-3.5 rounded-2xl w-full font-bold"></div>
+          <div><label class="text-xs font-bold text-gray-500 uppercase ml-1">Cajas</label><input type="number" v-model="editandoNota.cantidad_cajas" class="border border-gray-300 p-3.5 rounded-2xl w-full font-bold"></div>
+          <div><label class="text-xs font-bold text-gray-500 uppercase ml-1">Tara Tarima</label><input type="number" step="0.1" v-model="editandoNota.tara_tarima" class="border border-gray-300 p-3.5 rounded-2xl w-full"></div>
+          <div><label class="text-xs font-bold text-gray-500 uppercase ml-1">Tara Caja</label><input type="number" step="0.01" v-model="editandoNota.tara_caja" class="border border-gray-300 p-3.5 rounded-2xl w-full"></div>
+          <div class="col-span-2"><label class="text-xs font-bold text-gray-500 uppercase ml-1">Precio Unitario ($/kg)</label><input type="number" step="0.01" v-model="editandoNota.precio_kg" class="border border-gray-300 p-3.5 rounded-2xl w-full font-bold"></div>
         </div>
-        <div class="grid grid-cols-2 md:grid-cols-4 gap-6 mb-6 border-t pt-6">
-          <div><label class="block text-sm text-gray-500 mb-1">Cajas</label><input type="number" v-model="nuevaNota.cantidad_cajas" class="w-full border p-3.5 rounded-2xl text-sm outline-none" /></div>
-          <div><label class="block text-sm text-gray-500 mb-1">Peso Neto (kg)</label><input type="number" step="0.1" v-model="nuevaNota.peso_neto" class="w-full border p-3.5 rounded-2xl text-sm outline-none" /></div>
-          <div><label class="block text-sm text-gray-500 mb-1">Precio ($/kg)</label><input type="number" step="0.01" v-model="nuevaNota.precio_kg" class="w-full border p-3.5 rounded-2xl text-sm outline-none" /></div>
-          <div><label class="block text-sm text-gray-500 mb-1">Total (Auto)</label><input type="text" disabled :value="'$' + nuevaNota.total_monetario" class="w-full bg-emerald-50 text-emerald-800 font-bold border p-3.5 rounded-2xl text-sm outline-none" /></div>
-        </div>
-        <button @click="agregarNota" :disabled="cargando" class="bg-emerald-500 text-white px-8 py-3.5 rounded-2xl text-sm font-medium hover:bg-emerald-600 disabled:opacity-50">Guardar Nota</button>
-      </div>
-
-      <div class="bg-white p-8 rounded-3xl shadow-sm border overflow-x-auto">
-        <h2 class="text-xl font-medium mb-4 text-gray-700">Bandeja de Notas Libres</h2>
-        <table class="min-w-full text-left text-sm text-gray-600">
-          <thead class="bg-gray-50 border-b"><tr><th class="p-3">Folio</th><th class="p-3">Estado</th><th class="p-3">Proveedor</th><th class="p-3">Fruta</th><th class="p-3 text-right">Peso Neto</th><th class="p-3 text-right">Total</th><th class="p-3 text-right">Acción</th></tr></thead>
-          <tbody>
-            <tr v-for="n in notasLibres" :key="n.id" class="border-b hover:bg-gray-50">
-              <td class="p-3 font-mono font-bold text-gray-800">{{ n.folio || 'S/F' }}</td>
-              <td class="p-3"><span class="bg-orange-100 text-orange-700 px-2 py-1 rounded text-xs font-bold">POR CONCILIAR</span></td>
-              <td class="p-3 font-medium text-gray-800">{{ n.proveedor_nombre }}</td><td class="p-3">{{ n.fruta_nombre }}</td>
-              <td class="p-3 text-right">{{ formatearPeso(n.peso_neto) }} kg</td><td class="p-3 text-right font-bold text-emerald-600">${{ n.total_monetario }}</td>
-              <td class="p-3 text-right">
-                <button @click="prepararEdicionNota(n)" class="text-blue-500 font-bold mr-3 hover:text-blue-700">✏️ Editar</button>
-                <button @click="eliminarNota(n.id)" :disabled="cargando" class="text-red-500 hover:text-red-700 font-medium disabled:opacity-50">Eliminar</button>
-              </td>
-            </tr>
-            <tr v-if="notasLibres.length === 0"><td colspan="7" class="p-6 text-center text-gray-400">No hay notas libres para conciliar.</td></tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
-
-    <div v-if="pestanaActual === 'conciliacion'" class="animate-fade-in">
-       <div v-if="vistaConciliacion === 'historial'" class="space-y-6">
-        <div class="flex justify-between items-center bg-white p-6 rounded-3xl border"><input type="date" v-model="fechaFiltroConciliacion" class="border p-3 rounded-xl outline-none" /><button @click="iniciarNuevaConciliacion" class="bg-emerald-500 text-white px-8 py-3.5 rounded-2xl font-bold">+ Conciliar Nuevo</button></div>
-        <div class="bg-white p-8 rounded-3xl border overflow-x-auto">
-          <table class="min-w-full text-left text-sm text-gray-600"><thead class="bg-gray-50 border-b"><tr><th class="p-3">Viaje</th><th class="p-3">Acopiador</th><th class="p-3 text-right">Físico</th><th class="p-3 text-right">Teórico</th><th class="p-3 text-right">Diferencia</th><th class="p-3 text-center">Gestión</th></tr></thead>
-            <tbody>
-              <tr v-for="v in viajesConciliadosFiltrados" :key="v.id" class="border-b">
-                <td class="p-3 font-bold">#{{ v.id }}</td>
-                <td class="p-3">{{ nombreAcopiador(v.acopiador_id) }}</td>
-                <td class="p-3 text-right text-blue-600">{{ formatearPeso(v.peso_total_fisico) }} kg</td>
-                <td class="p-3 text-right text-orange-600">{{ formatearPeso(v.peso_total_teorico) }} kg</td>
-                <td class="p-3 text-right font-bold" :class="v.diferencia_peso >= 0 ? 'text-emerald-500' : 'text-red-500'">{{ v.diferencia_peso > 0 ? '+' : ''}}{{ formatearPeso(v.diferencia_peso) }} kg</td>
-                <td class="p-3 text-center"><button @click="deshacerConciliacion(v.id)" class="bg-orange-50 text-orange-600 border border-orange-200 px-3 py-1 rounded-lg text-xs font-bold hover:bg-orange-100 transition">⚠️ Deshacer</button></td>
-              </tr>
-              <tr v-if="viajesConciliadosFiltrados.length === 0"><td colspan="6" class="p-6 text-center text-gray-400">No hay viajes conciliados en esta fecha.</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-      <div v-if="vistaConciliacion === 'formulario'" class="space-y-6">
-        <button @click="vistaConciliacion = 'historial'" class="text-gray-500 font-medium">← Cancelar y Volver</button>
-        <div class="bg-white p-6 rounded-3xl border"><select v-model="viajeAConciliarId" class="w-full border p-4 rounded-2xl text-lg font-medium outline-none"><option value="" disabled>-- Elige un viaje cerrado --</option><option v-for="v in viajesCerradosParaConciliar" :value="v.id" :key="v.id">{{ formatoViajeSelect(v) }}</option></select></div>
-        <div v-if="detallesViajeAConciliar" class="grid grid-cols-2 gap-6">
-          <div class="bg-white p-6 rounded-3xl border text-center"><span class="text-blue-600 block mb-1 font-bold">Peso Físico (Báscula)</span><span class="text-4xl font-black text-blue-700">{{ formatearPeso(detallesViajeAConciliar.pesoFisicoTotal) }} kg</span></div>
-          <div class="bg-white p-6 rounded-3xl border text-center"><span class="text-orange-600 block mb-1 font-bold">Peso Teórico (Notas)</span><span class="text-4xl font-black text-orange-700">{{ formatearPeso(pesoTeoricoSeleccionado) }} kg</span></div>
-        </div>
-        <div v-if="detallesViajeAConciliar" class="bg-white p-6 rounded-3xl border">
-          <h3 class="font-bold text-gray-700 mb-4">Selecciona las notas que amparan este viaje:</h3>
-          <div class="space-y-2 max-h-60 overflow-y-auto pr-2">
-            <label v-for="n in notasLibres" :key="n.id" class="flex items-center p-4 bg-gray-50 rounded-xl cursor-pointer border hover:bg-emerald-50 transition">
-              <input type="checkbox" :value="n.id" v-model="notasSeleccionadasParaConciliar" class="w-6 h-6 text-emerald-500 mr-4 rounded">
-              <div class="flex-1"><p class="text-sm font-bold text-gray-800">Folio: {{n.folio}} | {{ n.proveedor_nombre }}</p></div><div class="font-bold text-orange-600 text-lg">{{ formatearPeso(n.peso_neto) }} kg</div>
-            </label>
-            <p v-if="notasLibres.length === 0" class="text-gray-400 italic">No hay notas libres disponibles.</p>
-          </div>
-        </div>
-        <div v-if="detallesViajeAConciliar" class="bg-gray-800 p-8 rounded-3xl text-white flex flex-col md:flex-row justify-between items-center gap-6">
-          <div><span class="text-gray-400 text-sm block mb-1">Diferencia Físico vs Teórico</span><div class="text-4xl font-black tracking-tight" :class="diferenciaConciliacion >= 0 ? 'text-emerald-400' : 'text-red-400'">{{ diferenciaConciliacion > 0 ? '+' : '' }}{{ formatearPeso(diferenciaConciliacion) }} kg</div></div>
-          <button @click="guardarConciliacion" :disabled="cargando" class="w-full md:w-auto bg-emerald-500 hover:bg-emerald-400 px-10 py-4 rounded-2xl font-bold text-lg transition shadow-lg disabled:opacity-50">Aprobar Conciliación</button>
-        </div>
-      </div>
-    </div>
-
-    <div v-if="pestanaActual === 'pagos'" class="space-y-8 animate-fade-in">
-      <div class="flex justify-between items-center"><h2 class="text-2xl font-light text-gray-700">Gestión de Pagos</h2><button @click="abrirModalPagos" class="bg-emerald-500 text-white px-6 py-3 rounded-2xl font-bold shadow-sm">+ Registrar Pago</button></div>
-      <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
-        
-        <div class="bg-white p-6 rounded-3xl border overflow-x-auto shadow-sm">
-          <h3 class="text-lg font-bold text-orange-600 mb-4 border-b pb-2">Deudas por Proveedor</h3>
-          
-          <div class="bg-orange-50 border border-orange-100 p-5 rounded-2xl mb-4 flex justify-between items-center">
-            <span class="text-orange-800 font-bold">Deuda Global Total:</span>
-            <span class="text-3xl font-black text-orange-600">${{ totalDeudaPendiente }}</span>
-          </div>
-          
-          <div class="space-y-3">
-            <div v-for="prov in deudasAgrupadas" :key="prov.id" class="border rounded-2xl overflow-hidden shadow-sm">
-              
-              <button @click="proveedorExpandido = proveedorExpandido === prov.id ? null : prov.id" 
-                      class="w-full flex justify-between items-center p-4 bg-gray-50 hover:bg-gray-100 transition">
-                <span class="font-bold text-gray-800 text-lg">{{ prov.nombre }}</span>
-                <div class="flex items-center gap-4">
-                  <span class="text-xl font-black text-orange-600">${{ prov.totalDeuda.toFixed(2) }}</span>
-                  <span class="text-gray-400 font-bold text-sm">{{ proveedorExpandido === prov.id ? '▲' : '▼' }}</span>
-                </div>
-              </button>
-              
-              <div v-if="proveedorExpandido === prov.id" class="p-4 bg-white border-t border-gray-100 animate-fade-in">
-                <table class="w-full text-sm text-left">
-                  <thead>
-                    <tr class="text-gray-400 border-b">
-                      <th class="pb-2">Fecha</th>
-                      <th class="pb-2">Folio Nota</th>
-                      <th class="pb-2">Fruta</th>
-                      <th class="pb-2 text-right">Monto</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr v-for="nota in prov.notas" :key="nota.id" class="border-b last:border-0 hover:bg-gray-50 transition">
-                      <td class="py-2 text-gray-500 font-medium">
-                        {{ nota.fecha ? new Date(nota.fecha).toLocaleDateString() : 'S/F' }}
-                      </td>
-                      <td class="py-2 font-mono font-bold text-gray-700">{{ nota.folio }}</td>
-                      <td class="py-2">{{ nota.fruta_nombre }}</td>
-                      <td class="py-2 text-right font-bold text-gray-800">${{ nota.total_monetario }}</td>
-                    </tr>
-                  </tbody>
-                </table>
-                
-                <div class="mt-4 flex justify-end">
-                    <button @click="nuevoPago.proveedor_id = prov.id; abrirModalPagos()" 
-                            class="text-xs bg-emerald-100 text-emerald-700 px-3 py-1 rounded-lg font-bold hover:bg-emerald-200">
-                        Preparar Liquidación
-                    </button>
-                </div>
-              </div>
-            </div>
-
-            <div v-if="deudasAgrupadas.length === 0" class="text-center py-6 text-gray-400 italic">
-                No hay deudas pendientes en el sistema.
-            </div>
-          </div>
-        </div>
-
-        <div class="bg-white p-6 rounded-3xl border overflow-x-auto shadow-sm">
-          <h3 class="text-lg font-bold text-emerald-600 mb-4 border-b pb-2">Últimos Pagos Realizados</h3>
-          <table class="min-w-full text-left text-sm text-gray-600">
-            <thead><tr><th class="pb-2">Fecha</th><th class="pb-2">Proveedor</th><th class="pb-2 text-right">Monto</th><th class="pb-2 text-center">Acción</th></tr></thead>
-            <tbody>
-              <tr v-for="p in pagos.slice().reverse()" :key="p.id" class="border-t hover:bg-gray-50 transition">
-                <td class="py-3 text-xs font-bold text-gray-500">{{ p.fecha_pago ? new Date(p.fecha_pago).toLocaleDateString() : 'N/A' }}</td>
-                <td class="py-3 font-medium">{{ p.proveedor_nombre }} <span class="block text-[10px] text-gray-400 font-mono">{{ p.folio_pago }}</span></td>
-                <td class="py-3 text-right font-bold text-emerald-600">${{ p.monto_total }}</td>
-                <td class="py-3 text-center"><button @click="abrirDetallePago(p)" class="bg-blue-50 text-blue-600 px-3 py-1.5 rounded-lg text-xs font-bold hover:bg-blue-100 transition">Ver Detalle</button></td>
-              </tr>
-              <tr v-if="pagos.length === 0"><td colspan="4" class="text-center py-6 text-gray-400">Aún no hay pagos registrados.</td></tr>
-            </tbody>
-          </table>
+        <div class="mt-8 flex gap-4">
+          <button @click="mostrarModalEdicionNota = false" class="flex-1 bg-gray-100 py-3.5 rounded-2xl font-bold text-gray-600">Cancelar</button>
+          <button @click="guardarCambiosNota" class="flex-1 bg-blue-500 text-white py-3.5 rounded-2xl font-bold hover:bg-blue-400 shadow-md">Guardar Corrección</button>
         </div>
       </div>
     </div>
@@ -538,109 +602,60 @@ const guardarEdicionPesada = async () => {
       <div class="bg-white rounded-3xl w-full max-w-2xl p-8 max-h-[90vh] overflow-y-auto shadow-2xl">
         <h2 class="text-2xl font-bold mb-6 text-gray-800">Generar Liquidación / Pago</h2>
         <div class="grid grid-cols-2 gap-5 mb-6">
-          <select v-model="nuevoPago.proveedor_id" @change="nuevoPago.nota_ids = []" class="w-full border border-gray-300 p-3.5 rounded-2xl outline-none focus:ring-2 focus:ring-emerald-400 font-medium">
+          <select v-model="nuevoPago.proveedor_id" @change="nuevoPago.nota_ids = []" class="w-full border border-gray-300 p-3.5 rounded-2xl font-medium">
             <option value="" disabled>Selecciona Proveedor...</option>
             <option v-for="p in proveedores" :value="p.id" :key="p.id">{{ p.nombre }}</option>
           </select>
-          <input type="date" v-model="nuevoPago.fecha_pago" class="w-full border border-gray-300 p-3.5 rounded-2xl outline-none focus:ring-2 focus:ring-emerald-400 font-medium" />
+          <input type="date" v-model="nuevoPago.fecha_pago" class="w-full border border-gray-300 p-3.5 rounded-2xl font-medium" />
         </div>
-        <div class="mb-6">
-          <input v-model="nuevoPago.folio_pago" placeholder="Referencia bancaria o Folio interno de pago" class="w-full border border-gray-300 p-3.5 rounded-2xl uppercase outline-none focus:ring-2 focus:ring-emerald-400 font-bold" />
-        </div>
+        <div class="mb-6"><input v-model="nuevoPago.folio_pago" placeholder="Referencia bancaria o Folio interno de pago" class="w-full border border-gray-300 p-3.5 rounded-2xl uppercase font-bold" /></div>
         <div v-if="nuevoPago.proveedor_id" class="border-t pt-4">
           <p class="text-sm font-bold text-gray-500 mb-2">Selecciona las notas a liquidar:</p>
-          <div class="max-h-40 overflow-y-auto space-y-2 mb-6 bg-gray-50 p-3 rounded-2xl border border-gray-100">
+          <div class="max-h-40 overflow-y-auto space-y-2 mb-6 bg-gray-50 p-3 rounded-2xl border">
             <label v-for="n in notasDelProveedorSeleccionado" :key="n.id" class="flex items-center p-3 bg-white rounded-xl cursor-pointer border hover:border-emerald-300 transition shadow-sm">
               <input type="checkbox" :value="n.id" v-model="nuevoPago.nota_ids" class="w-5 h-5 text-emerald-500 mr-4 rounded">
               <div class="flex-1"><p class="text-sm font-bold text-gray-800">Folio Nota: {{n.folio}}</p></div><div class="font-black text-orange-600">${{ n.total_monetario }}</div>
             </label>
-            <p v-if="notasDelProveedorSeleccionado.length === 0" class="text-center text-sm text-gray-400 py-2">Este proveedor no tiene notas pendientes.</p>
           </div>
           <div class="bg-emerald-50 p-6 rounded-3xl flex justify-between items-center border border-emerald-100"><span class="text-emerald-800 font-bold text-lg">Total a Liquidar:</span><span class="text-4xl font-black text-emerald-600">${{ nuevoPago.monto_total }}</span></div>
         </div>
-        <div class="mt-8 flex gap-4"><button @click="mostrarModalPago = false" class="flex-1 bg-gray-100 py-4 rounded-2xl font-bold text-gray-600 hover:bg-gray-200 transition">Cancelar</button><button @click="registrarPago" :disabled="cargando || nuevoPago.monto_total <= 0" class="flex-1 bg-emerald-500 text-white py-4 rounded-2xl font-bold text-lg hover:bg-emerald-400 transition shadow-md disabled:opacity-50">Procesar Pago</button></div>
+        <div class="mt-8 flex gap-4"><button @click="mostrarModalPago = false" class="flex-1 bg-gray-100 py-4 rounded-2xl font-bold text-gray-600">Cancelar</button><button @click="registrarPago" :disabled="cargando || nuevoPago.monto_total <= 0" class="flex-1 bg-emerald-500 text-white py-4 rounded-2xl font-bold text-lg hover:bg-emerald-400 shadow-md disabled:opacity-50">Procesar Pago</button></div>
       </div>
     </div>
 
     <div v-if="mostrarModalDetallePago" class="fixed inset-0 bg-gray-900 bg-opacity-60 flex items-center justify-center z-50 p-4 backdrop-blur-sm">
       <div class="bg-white rounded-3xl w-full max-w-2xl p-8 max-h-[90vh] overflow-y-auto shadow-2xl">
         <div class="flex justify-between items-start mb-6 border-b pb-4">
-          <div>
-            <h2 class="text-2xl font-black text-gray-800">Detalle de Pago</h2>
-            <p class="text-gray-500 font-medium">{{ pagoSeleccionado.proveedor_nombre }}</p>
-          </div>
-          <button @click="modoEdicionPago = !modoEdicionPago" :class="modoEdicionPago ? 'bg-blue-500 text-white' : 'bg-gray-100 text-blue-600'" class="px-4 py-2 rounded-xl font-bold transition">
-            {{ modoEdicionPago ? 'Cancelar Edición' : '✏️ Editar Datos' }}
-          </button>
+          <div><h2 class="text-2xl font-black text-gray-800">Detalle de Pago</h2><p class="text-gray-500 font-medium">{{ pagoSeleccionado.proveedor_nombre }}</p></div>
+          <button @click="modoEdicionPago = !modoEdicionPago" :class="modoEdicionPago ? 'bg-blue-500 text-white' : 'bg-gray-100 text-blue-600'" class="px-4 py-2 rounded-xl font-bold transition">{{ modoEdicionPago ? 'Cancelar Edición' : '✏️ Editar Datos' }}</button>
         </div>
-
         <div class="grid grid-cols-2 gap-6 mb-6">
           <div v-if="!modoEdicionPago" class="col-span-2 flex gap-6 p-4 bg-gray-50 rounded-2xl border">
             <div class="flex-1"><span class="block text-xs text-gray-400 font-bold uppercase">Folio / Referencia</span><span class="font-mono font-bold text-lg">{{ pagoSeleccionado.folio_pago }}</span></div>
             <div class="flex-1"><span class="block text-xs text-gray-400 font-bold uppercase">Fecha</span><span class="font-bold text-lg">{{ pagoSeleccionado.fecha_pago ? new Date(pagoSeleccionado.fecha_pago).toLocaleDateString() : 'N/A' }}</span></div>
           </div>
           <template v-else>
-            <div><label class="text-xs font-bold text-gray-500 uppercase ml-1">Folio / Referencia</label><input v-model="pagoEditando.folio_pago" class="border border-gray-300 p-3.5 rounded-2xl w-full uppercase outline-none focus:border-blue-400"></div>
-            <div><label class="text-xs font-bold text-gray-500 uppercase ml-1">Fecha</label><input type="date" v-model="pagoEditando.fecha_pago" class="border border-gray-300 p-3.5 rounded-2xl w-full outline-none focus:border-blue-400"></div>
+            <div><label class="text-xs font-bold text-gray-500 uppercase ml-1">Folio / Referencia</label><input v-model="pagoEditando.folio_pago" class="border p-3.5 rounded-2xl w-full uppercase"></div>
+            <div><label class="text-xs font-bold text-gray-500 uppercase ml-1">Fecha</label><input type="date" v-model="pagoEditando.fecha_pago" class="border p-3.5 rounded-2xl w-full"></div>
           </template>
         </div>
-
-        <h3 class="font-bold text-gray-700 mb-3">Notas amparadas en este pago:</h3>
-        <div class="max-h-48 overflow-y-auto mb-6 border rounded-2xl bg-white shadow-sm">
-          <table class="min-w-full text-left text-sm">
-            <thead class="bg-gray-50 border-b"><tr><th class="p-3">Folio Nota</th><th class="p-3">Fruta</th><th class="p-3 text-right">Peso</th><th class="p-3 text-right">Monto</th></tr></thead>
-            <tbody>
-              <tr v-for="n in notasDelPagoSeleccionado" :key="n.id" class="border-b">
-                <td class="p-3 font-bold font-mono">{{ n.folio }}</td><td class="p-3">{{ n.fruta_nombre }}</td>
-                <td class="p-3 text-right">{{ formatearPeso(n.peso_neto) }} kg</td><td class="p-3 text-right font-bold text-emerald-600">${{ n.total_monetario }}</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-
-        <div class="flex justify-between items-center mb-8">
-          <button @click="anularPago" class="text-red-500 hover:text-red-700 font-bold underline text-sm transition">❌ Anular Pago Completamente</button>
-          <div class="text-right"><span class="block text-xs font-bold text-gray-400 uppercase">Total Pagado</span><span class="text-3xl font-black text-emerald-600">${{ pagoSeleccionado.monto_total }}</span></div>
-        </div>
-
-        <div class="flex gap-4 border-t pt-6">
-          <button @click="mostrarModalDetallePago = false" class="flex-1 bg-gray-100 py-3.5 rounded-2xl font-bold text-gray-600 hover:bg-gray-200 transition">Cerrar</button>
-          <button v-if="modoEdicionPago" @click="guardarEdicionPago" :disabled="cargando" class="flex-1 bg-blue-500 text-white py-3.5 rounded-2xl font-bold hover:bg-blue-400 transition shadow-md disabled:opacity-50">Guardar Cambios</button>
-        </div>
-      </div>
-    </div>
-
-    <div v-if="mostrarModalEdicionNota" class="fixed inset-0 bg-gray-900 bg-opacity-60 flex items-center justify-center p-4 z-50 backdrop-blur-sm">
-      <div class="bg-white p-8 rounded-3xl w-full max-w-lg shadow-2xl">
-        <h2 class="text-2xl font-bold mb-6 text-gray-800">Corregir Nota #{{editandoNota.id}}</h2>
-        <div class="grid grid-cols-2 gap-5">
-          <div class="col-span-2"><label class="text-xs font-bold text-gray-500 uppercase ml-1">Folio Físico</label><input v-model="editandoNota.folio" class="border border-gray-300 p-3.5 rounded-2xl w-full font-bold uppercase outline-none focus:border-blue-400"></div>
-          <div class="col-span-2"><label class="text-xs font-bold text-gray-500 uppercase ml-1">Proveedor</label><select v-model="editandoNota.proveedor_id" class="w-full border border-gray-300 p-3.5 rounded-2xl outline-none focus:border-blue-400"><option v-for="p in proveedores" :value="p.id" :key="p.id">{{ p.nombre }}</option></select></div>
-          <div class="col-span-2"><label class="text-xs font-bold text-gray-500 uppercase ml-1">Fruta</label><select v-model="editandoNota.tipo_fruta_id" class="w-full border border-gray-300 p-3.5 rounded-2xl outline-none focus:border-blue-400"><option v-for="f in tiposFruta" :value="f.id" :key="f.id">{{ f.nombre }}</option></select></div>
-          <div><label class="text-xs font-bold text-gray-500 uppercase ml-1">Cajas</label><input type="number" v-model="editandoNota.cantidad_cajas" class="border border-gray-300 p-3.5 rounded-2xl w-full outline-none focus:border-blue-400"></div>
-          <div><label class="text-xs font-bold text-gray-500 uppercase ml-1">Peso Neto (kg)</label><input type="number" step="0.1" v-model="editandoNota.peso_neto" class="border border-gray-300 p-3.5 rounded-2xl w-full outline-none focus:border-blue-400"></div>
-          <div class="col-span-2"><label class="text-xs font-bold text-gray-500 uppercase ml-1">Precio Unitario ($/kg)</label><input type="number" step="0.01" v-model="editandoNota.precio_kg" class="border border-gray-300 p-3.5 rounded-2xl w-full outline-none focus:border-blue-400"></div>
-        </div>
-        <div class="mt-8 flex gap-4">
-          <button @click="mostrarModalEdicionNota = false" class="flex-1 bg-gray-100 py-3.5 rounded-2xl font-bold text-gray-600 hover:bg-gray-200 transition">Cancelar</button>
-          <button @click="guardarCambiosNota" class="flex-1 bg-blue-500 text-white py-3.5 rounded-2xl font-bold hover:bg-blue-400 transition shadow-md">Guardar Corrección</button>
-        </div>
+        <h3 class="font-bold text-gray-700 mb-3">Notas amparadas:</h3>
+        <div class="max-h-48 overflow-y-auto mb-6 border rounded-2xl bg-white"><table class="min-w-full text-left text-sm"><thead class="bg-gray-50 border-b"><tr><th class="p-3">Folio Nota</th><th class="p-3">Fruta</th><th class="p-3 text-right">Peso</th><th class="p-3 text-right">Monto</th></tr></thead><tbody><tr v-for="n in  notasDelPagoSeleccionado" :key="n.id" class="border-b"><td class="p-3 font-bold font-mono">{{ n.folio }}</td><td class="p-3">{{ n.fruta_nombre }}</td><td class="p-3 text-right">{{ formatearPeso(n.peso_neto) }} kg</td><td class="p-3 text-right font-bold text-emerald-600">${{ n.total_monetario }}</td></tr></tbody></table></div>
+        <div class="flex justify-between items-center mb-8"><button @click="anularPago" class="text-red-500 hover:text-red-700 font-bold underline text-sm">❌ Anular Pago Completamente</button><div class="text-right"><span class="block text-xs font-bold text-gray-400 uppercase">Total Pagado</span><span class="text-3xl font-black text-emerald-600">${{ pagoSeleccionado.monto_total }}</span></div></div>
+        <div class="flex gap-4 border-t pt-6"><button @click="mostrarModalDetallePago = false" class="flex-1 bg-gray-100 py-3.5 rounded-2xl font-bold text-gray-600">Cerrar</button><button v-if="modoEdicionPago" @click="guardarEdicionPago" class="flex-1 bg-blue-500 text-white py-3.5 rounded-2xl font-bold">Guardar Cambios</button></div>
       </div>
     </div>
 
     <div v-if="mostrarModalEdicionCatalogo" class="fixed inset-0 bg-gray-900 bg-opacity-60 flex items-center justify-center p-4 z-50 backdrop-blur-sm">
       <div class="bg-white p-8 rounded-3xl w-full max-w-sm shadow-2xl">
-        <h2 class="text-2xl font-bold mb-6 text-gray-800 capitalize">Editar {{tipoCatalogoEdicion.replace('-', ' ')}}</h2>
+        <h2 class="text-2xl font-bold mb-6 text-gray-800 capitalize">Editar {{tipoCatalogoEdicion}}</h2>
         <div class="space-y-5">
-          <div><label class="text-xs font-bold text-gray-500 uppercase ml-1">Nombre</label><input v-model="itemEditando.nombre" class="border border-gray-300 p-3.5 rounded-2xl w-full font-medium outline-none focus:border-blue-400"></div>
-          <div v-if="tipoCatalogoEdicion === 'acopiadores'"><label class="text-xs font-bold text-gray-500 uppercase ml-1">Teléfono</label><input v-model="itemEditando.telefono" class="border border-gray-300 p-3.5 rounded-2xl w-full font-medium outline-none focus:border-blue-400"></div>
-          <div v-if="tipoCatalogoEdicion === 'proveedores' || tipoCatalogoEdicion === 'clientes'"><label class="text-xs font-bold text-gray-500 uppercase ml-1">Contacto</label><input v-model="itemEditando.contacto" class="border border-gray-300 p-3.5 rounded-2xl w-full font-medium outline-none focus:border-blue-400"></div>
-          <div v-if="tipoCatalogoEdicion === 'tipos-fruta'"><label class="text-xs font-bold text-gray-500 uppercase ml-1">Descripción</label><input v-model="itemEditando.descripcion" class="border border-gray-300 p-3.5 rounded-2xl w-full font-medium outline-none focus:border-blue-400"></div>
+          <div><label class="text-xs font-bold text-gray-500 uppercase ml-1">Nombre</label><input v-model="itemEditando.nombre" class="border p-3.5 rounded-2xl w-full font-medium"></div>
+          <div v-if="tipoCatalogoEdicion === 'acopiadores'"><label class="text-xs font-bold text-gray-500 uppercase ml-1">Teléfono</label><input v-model="itemEditando.telefono" class="border p-3.5 rounded-2xl w-full font-medium"></div>
+          <div v-if="tipoCatalogoEdicion === 'proveedores' || tipoCatalogoEdicion === 'clientes'"><label class="text-xs font-bold text-gray-500 uppercase ml-1">Contacto</label><input v-model="itemEditando.contacto" class="border p-3.5 rounded-2xl w-full font-medium"></div>
+          <div v-if="tipoCatalogoEdicion === 'tipos-fruta'"><label class="text-xs font-bold text-gray-500 uppercase ml-1">Descripción</label><input v-model="itemEditando.descripcion" class="border p-3.5 rounded-2xl w-full font-medium"></div>
         </div>
-        <div class="mt-8 flex gap-4">
-          <button @click="mostrarModalEdicionCatalogo = false" class="flex-1 bg-gray-100 py-3.5 rounded-2xl font-bold text-gray-600 hover:bg-gray-200 transition">Cancelar</button>
-          <button @click="guardarEdicionCatalogo" class="flex-1 bg-blue-500 text-white py-3.5 rounded-2xl font-bold hover:bg-blue-400 transition shadow-md">Actualizar</button>
-        </div>
+        <div class="mt-8 flex gap-4"><button @click="mostrarModalEdicionCatalogo = false" class="flex-1 bg-gray-100 py-3.5 rounded-2xl font-bold text-gray-600">Cancelar</button><button @click="guardarEdicionCatalogo" class="flex-1 bg-blue-500 text-white py-3.5 rounded-2xl font-bold">Actualizar</button></div>
       </div>
     </div>
 
@@ -648,7 +663,7 @@ const guardarEdicionPesada = async () => {
       <div class="bg-white rounded-3xl w-full max-w-md p-8 shadow-2xl">
         <h2 class="text-2xl font-bold mb-6 text-gray-800">Corregir Pesada #{{pesadaEditando.numero_tarima}}</h2>
         <div class="space-y-4">
-          <div><label class="text-xs font-bold text-gray-400">TIPO DE FRUTA</label><select v-model="pesadaEditando.tipo_fruta_id" class="w-full border p-3 rounded-xl outline-none text-gray-700 font-medium"><option v-for="f in tiposFruta" :value="f.id" :key="f.id">{{f.nombre}}</option></select></div>
+          <div><label class="text-xs font-bold text-gray-400">TIPO DE FRUTA</label><select v-model="pesadaEditando.tipo_fruta_id" class="w-full border p-3 rounded-xl text-gray-700 font-medium"><option v-for="f in tiposFruta" :value="f.id" :key="f.id">{{f.nombre}}</option></select></div>
           <div class="grid grid-cols-2 gap-4">
             <div><label class="text-xs font-bold text-gray-400">PESO BRUTO</label><input type="number" step="0.5" v-model="pesadaEditando.peso_bruto" class="w-full border p-3 rounded-xl font-bold"></div>
             <div><label class="text-xs font-bold text-gray-400">CAJAS</label><input type="number" v-model="pesadaEditando.cantidad_cajas" class="w-full border p-3 rounded-xl font-bold"></div>
@@ -656,10 +671,7 @@ const guardarEdicionPesada = async () => {
             <div><label class="text-xs font-bold text-orange-400">TARA TARIMA</label><input type="number" step="0.1" v-model="pesadaEditando.tara_tarima" class="w-full border p-3 rounded-xl font-bold text-orange-600 bg-orange-50"></div>
           </div>
         </div>
-        <div class="flex gap-4 mt-8">
-          <button @click="mostrarModalEdicionPesada = false" class="flex-1 bg-gray-100 py-3 rounded-xl font-bold text-gray-600 hover:bg-gray-200 transition">Cancelar</button>
-          <button @click="guardarEdicionPesada" class="flex-1 bg-blue-500 text-white font-bold py-3 rounded-xl hover:bg-blue-600 transition shadow-md">Guardar Cambios</button>
-        </div>
+        <div class="flex gap-4 mt-8"><button @click="mostrarModalEdicionPesada = false" class="flex-1 bg-gray-100 py-3 rounded-xl font-bold text-gray-600">Cancelar</button><button @click="guardarEdicionPesada" class="flex-1 bg-blue-500 text-white font-bold py-3 rounded-xl shadow-md">Guardar Cambios</button></div>
       </div>
     </div>
   </div>

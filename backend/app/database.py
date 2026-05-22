@@ -80,7 +80,7 @@ def create_db_and_tables():
         FOREIGN KEY(proveedor_id) REFERENCES proveedor(id)
     )""")
 
-    # 8. Notas de Proveedor (con campo folio y pago_id)
+    # 8. Notas de Proveedor (con campo folio, pago_id y fecha explícita)
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS notaproveedor (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -138,7 +138,7 @@ def create_db_and_tables():
 
     conn.commit()
     conn.close()
-    print("Base de datos de El Sauce ERP actualizada correctamente.")
+    print("Base de datos de El Sauce ERP inicializada/actualizada correctamente.")
 
 if __name__ == "__main__":
     create_db_and_tables()

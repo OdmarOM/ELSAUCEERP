@@ -1,35 +1,35 @@
 <script setup>
 import { ref, onMounted, onUnmounted, computed } from 'vue'
 
-const API_URL = 'http://127.0.0.1:8000/api'
- //const API_URL = 'http://192.168.50.101:8000/api'
+//const API_URL = 'http://127.0.0.1:8000/api'
+const API_URL = 'http://192.168.50.101:8000/api'
+
 const moduloActual = ref('bascula') // 'bascula' o 'frio'
 const vistaActual = ref('lista')
 
 const cargando = ref(false)
 
+// Datos de catálogos
 const acopiadores = ref([])
 const clientes = ref([])
 const tiposFruta = ref([])
 const viajes = ref([])
-const registros = ref([]) 
+const registros = ref([])
 const ubicacionesFrio = ref([])
+
+// Estados de UI
 const viajeSeleccionado = ref(null)
 const mostrarModalViaje = ref(false)
-
-// NUEVO: Filtro de fecha para viajes
 const fechaFiltroViajes = ref(new Date().toISOString().split('T')[0])
-
-// NUEVO: Modal Edición Tarima
 const mostrarModalEditarTarima = ref(false)
 const tarimaEditando = ref({})
 
+// Formularios
 const nuevoViaje = ref({ tipo_operacion: 'ACOPIO', acopiador_id: '', cliente_id: '', placa: '' })
 const nuevaPesada = ref({ tipo_fruta_id: '', cantidad_cajas: 42, tara_caja: 1.7, cantidad_tarimas: 1, tara_tarima: 21.0, peso_bruto: '', promedio_peso_caja: 0.0 })
 
-const formatearPeso = (valor) => {
-  return parseFloat(valor || 0).toFixed(2);
-}
+// Utilidades
+const formatearPeso = (valor) => parseFloat(valor || 0).toFixed(2);
 
 // ================= LECTURA DE BÁSCULA ESP32 =================
 const pesoLectura = ref(0.0)
@@ -61,61 +61,160 @@ onUnmounted(() => {
   if (intervaloLectura) clearInterval(intervaloLectura)
 })
 
-const taraTotalCalculada = computed(() => (parseFloat(nuevaPesada.value.cantidad_cajas || 0) * parseFloat(nuevaPesada.value.tara_caja || 0)) + (parseFloat(nuevaPesada.value.cantidad_tarimas || 0) * parseFloat(nuevaPesada.value.tara_tarima || 0)))
-const pesoNetoCalculado = computed(() => Math.max(0, (parseFloat(nuevaPesada.value.peso_bruto || 0) - taraTotalCalculada.value)).toFixed(2))
+// ================= LÓGICA DE CÁLCULO =================
+const taraTotalCalculada = computed(() => 
+  (parseFloat(nuevaPesada.value.cantidad_cajas || 0) * parseFloat(nuevaPesada.value.tara_caja || 0)) + 
+  (parseFloat(nuevaPesada.value.cantidad_tarimas || 0) * parseFloat(nuevaPesada.value.tara_tarima || 0))
+)
+const pesoNetoCalculado = computed(() => 
+  Math.max(0, (parseFloat(nuevaPesada.value.peso_bruto || 0) - taraTotalCalculada.value)).toFixed(2)
+)
 
+// ================= API CENTRALIZADA =================
 const fetchCatalogos = async () => {
   try {
-    const [resAcop, resProv, resCli, resFruta, resViajes, resRegistros, resFrio] = await Promise.all([
-      fetch(`${API_URL}/acopiadores`), fetch(`${API_URL}/proveedores`), fetch(`${API_URL}/clientes`), fetch(`${API_URL}/tipos-fruta`), 
-      fetch(`${API_URL}/viajes`), fetch(`${API_URL}/registros-bascula`), fetch(`${API_URL}/cuarto-frio`)
+    const [resAcop, resCli, resFruta, resViajes, resRegistros, resFrio] = await Promise.all([
+      fetch(`${API_URL}/acopiadores`), 
+      fetch(`${API_URL}/clientes`), 
+      fetch(`${API_URL}/tipos-fruta`), 
+      fetch(`${API_URL}/viajes`), 
+      fetch(`${API_URL}/registros-bascula`), 
+      fetch(`${API_URL}/cuarto-frio`)
     ])
-    acopiadores.value = await resAcop.json(); clientes.value = await resCli.json(); tiposFruta.value = await resFruta.json(); 
-    viajes.value = await resViajes.json(); registros.value = await resRegistros.json(); ubicacionesFrio.value = await resFrio.json();
-  } catch (e) { console.error('Error:', e) }
+    
+    acopiadores.value = await resAcop.json()
+    clientes.value = await resCli.json()
+    tiposFruta.value = await resFruta.json()
+    viajes.value = await resViajes.json()
+    registros.value = await resRegistros.json()
+    ubicacionesFrio.value = await resFrio.json()
+    
+    // Sincroniza el viaje seleccionado tras actualizar catálogos
+    if (viajeSeleccionado.value) {
+      viajeSeleccionado.value = viajes.value.find(v => v.id === viajeSeleccionado.value.id) || null
+    }
+  } catch (e) { 
+    console.error('Error al cargar catálogos:', e) 
+  }
 }
 
 onMounted(() => fetchCatalogos())
 
-// ================= BASCULA LÓGICA =================
+// ================= MÓDULO BÁSCULA =================
 const viajesDelDia = computed(() => {
-  return viajes.value.filter(v => v.fecha_entrada.startsWith(fechaFiltroViajes.value)).sort((a, b) => b.id - a.id)
+  return viajes.value
+    .filter(v => v.fecha_entrada.startsWith(fechaFiltroViajes.value))
+    .sort((a, b) => b.id - a.id)
 })
 
 const nombreResponsableViaje = (v) => {
-  if (v.tipo_operacion === 'MAQUILA') return clientes.value.find(c => c.id === v.cliente_id)?.nombre || 'Cliente Desconocido'
+  if (v.tipo_operacion === 'MAQUILA') 
+    return clientes.value.find(c => c.id === v.cliente_id)?.nombre || 'Cliente Desconocido'
   return acopiadores.value.find(a => a.id === v.acopiador_id)?.nombre || 'Acopiador Desconocido'
 }
 
-const abrirModalViaje = () => { nuevoViaje.value = { tipo_operacion: 'ACOPIO', acopiador_id: '', cliente_id: '', placa: '' }; mostrarModalViaje.value = true }
+const abrirModalViaje = () => { 
+  nuevoViaje.value = { tipo_operacion: 'ACOPIO', acopiador_id: '', cliente_id: '', placa: '' }
+  mostrarModalViaje.value = true 
+}
 
 const registrarViaje = async () => { 
-  if (nuevoViaje.value.tipo_operacion === 'ACOPIO' && !nuevoViaje.value.acopiador_id) return alert("Selecciona un acopiador");
-  if (nuevoViaje.value.tipo_operacion === 'MAQUILA' && !nuevoViaje.value.cliente_id) return alert("Selecciona un cliente");
+  if (nuevoViaje.value.tipo_operacion === 'ACOPIO' && !nuevoViaje.value.acopiador_id) 
+    return alert("Selecciona un acopiador")
+  if (nuevoViaje.value.tipo_operacion === 'MAQUILA' && !nuevoViaje.value.cliente_id) 
+    return alert("Selecciona un cliente")
 
-  cargando.value = true; 
+  cargando.value = true
   try { 
     const payload = {
       tipo_operacion: nuevoViaje.value.tipo_operacion,
       placa: nuevoViaje.value.tipo_operacion === 'ACOPIO' ? nuevoViaje.value.placa : 'N/A', 
       acopiador_id: nuevoViaje.value.tipo_operacion === 'ACOPIO' ? parseInt(nuevoViaje.value.acopiador_id) : null,
       cliente_id: nuevoViaje.value.tipo_operacion === 'MAQUILA' ? parseInt(nuevoViaje.value.cliente_id) : null
-    };
+    }
 
-    const res = await fetch(`${API_URL}/viajes`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); 
-    if (!res.ok) { alert("Hubo un error al guardar. Revisa la consola."); return; }
+    const res = await fetch(`${API_URL}/viajes`, { 
+      method: 'POST', 
+      headers: { 'Content-Type': 'application/json' }, 
+      body: JSON.stringify(payload) 
+    })
+    
+    if (!res.ok) {
+      const err = await res.json()
+      alert(err.detail || "Error al guardar el viaje.")
+      return
+    }
 
-    const viajeCreado = await res.json(); 
-    mostrarModalViaje.value = false; await fetchCatalogos(); abrirDetalleViaje(viajeCreado); 
-  } catch (error) { alert("Error de conexión con el servidor."); } finally { cargando.value = false; } 
+    const viajeCreado = await res.json()
+    mostrarModalViaje.value = false
+    await fetchCatalogos()
+    abrirDetalleViaje(viajeCreado)
+  } catch (error) { 
+    alert("Error de conexión con el servidor.") 
+  } finally { 
+    cargando.value = false 
+  } 
 }
 
-const abrirDetalleViaje = (viaje) => { viajeSeleccionado.value = viaje; vistaActual.value = 'detalle'; nuevaPesada.value = { tipo_fruta_id: '', cantidad_cajas: 42, tara_caja: 1.7, cantidad_tarimas: 1, tara_tarima: 21.0, peso_bruto: '', promedio_peso_caja: 0.0 } }
-const cerrarViaje = async () => { if (!confirm("¿Cerrar viaje?")) return; cargando.value = true; try { await fetch(`${API_URL}/viajes/${viajeSeleccionado.value.id}/cerrar`, { method: 'PUT' }); await fetchCatalogos(); vistaActual.value = 'lista'; viajeSeleccionado.value = null } finally { cargando.value = false } }
-const registrosDelViaje = computed(() => { if (!viajeSeleccionado.value) return []; return registros.value.filter(t => t.viaje_id === viajeSeleccionado.value.id).sort((a, b) => b.id - a.id) })
+const abrirDetalleViaje = (viaje) => { 
+  viajeSeleccionado.value = viaje
+  vistaActual.value = 'detalle'
+  nuevaPesada.value = { 
+    tipo_fruta_id: '', cantidad_cajas: 42, tara_caja: 1.7, 
+    cantidad_tarimas: 1, tara_tarima: 21.0, peso_bruto: '', promedio_peso_caja: 0.0 
+  } 
+}
+
+const cerrarViaje = async () => { 
+  if (!confirm("¿Cerrar viaje? Esto inhabilitará la carga de nuevas pesadas.")) return
+  
+  cargando.value = true
+  try { 
+    const res = await fetch(`${API_URL}/viajes/${viajeSeleccionado.value.id}/cerrar`, { method: 'PUT' })
+    if (!res.ok) {
+      const err = await res.json()
+      alert(err.detail || "Error al cerrar el viaje.")
+      return
+    }
+    await fetchCatalogos()
+    vistaActual.value = 'lista'
+    viajeSeleccionado.value = null 
+  } finally { 
+    cargando.value = false 
+  } 
+}
+
+const eliminarViajeCompleto = async (viajeId) => {
+  if(!confirm("🚨 ATENCIÓN: Vas a borrar este viaje y TODAS sus pesadas asociadas de forma irreversible.\n\n¿Deseas continuar?")) 
+    return
+
+  cargando.value = true
+  try {
+    const res = await fetch(`${API_URL}/viajes/${viajeId}`, { method: 'DELETE' })
+    if(!res.ok) {
+      const err = await res.json()
+      alert(err.detail || "Error al eliminar el viaje")
+    } else {
+      viajeSeleccionado.value = null
+      vistaActual.value = 'lista'
+      await fetchCatalogos()
+    }
+  } finally { 
+    cargando.value = false 
+  }
+}
+
+const registrosDelViaje = computed(() => { 
+  if (!viajeSeleccionado.value) return []
+  return registros.value
+    .filter(t => t.viaje_id === viajeSeleccionado.value.id)
+    .sort((a, b) => b.id - a.id) 
+})
 
 const registrarPesada = async () => { 
-  cargando.value = true; 
+  if (!nuevaPesada.value.peso_bruto) return alert("El peso bruto es obligatorio.")
+  
+  cargando.value = true
   try { 
     const payload = { 
       ...nuevaPesada.value, 
@@ -124,15 +223,31 @@ const registrarPesada = async () => {
       numero_tarima: registrosDelViaje.value.length + 1, 
       tara_total: taraTotalCalculada.value, 
       peso_neto: pesoNetoCalculado.value, 
-      promedio_peso_caja: nuevaPesada.value.cantidad_cajas > 0 ? (pesoNetoCalculado.value / nuevaPesada.value.cantidad_cajas) : 0 
-    }; 
-    await fetch(`${API_URL}/registros-bascula`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); 
-    nuevaPesada.value.peso_bruto = ''; await fetchCatalogos() 
-  } finally { cargando.value = false } 
+      promedio_peso_caja: nuevaPesada.value.cantidad_cajas > 0 
+        ? (pesoNetoCalculado.value / nuevaPesada.value.cantidad_cajas) 
+        : 0 
+    }
+    
+    const res = await fetch(`${API_URL}/registros-bascula`, { 
+      method: 'POST', 
+      headers: { 'Content-Type': 'application/json' }, 
+      body: JSON.stringify(payload) 
+    })
+    
+    if (!res.ok) {
+      const err = await res.json()
+      alert(err.detail || "Error de validación al guardar la pesada.")
+      return
+    }
+    
+    nuevaPesada.value.peso_bruto = ''
+    await fetchCatalogos() 
+  } finally { 
+    cargando.value = false 
+  } 
 }
 
-// ================= CUARTO FRÍO Y BODEGA LÓGICA =================
-// MODIFICADO: 5 FILAS x 10 COLUMNAS (Orientación Horizontal)
+// ================= CUARTO FRÍO Y BODEGA =================
 const FILAS = 5
 const COLUMNAS = 10
 
@@ -140,9 +255,9 @@ const tarimasEnBodega = computed(() => {
   return registros.value
     .filter(r => r.estado_ubicacion === 'EN_BODEGA')
     .map(r => {
-      const viaje = viajes.value.find(v => v.id === r.viaje_id);
-      const d = viaje ? new Date(viaje.fecha_entrada) : new Date();
-      const es_maquila = viaje?.tipo_operacion === 'MAQUILA';
+      const viaje = viajes.value.find(v => v.id === r.viaje_id)
+      const d = viaje ? new Date(viaje.fecha_entrada) : new Date()
+      const es_maquila = viaje?.tipo_operacion === 'MAQUILA'
       
       let nombre_dueno = 'Desconocido'
       if (es_maquila) {
@@ -170,9 +285,9 @@ const tarimaOcupadaSeleccionada = ref(null)
 const modoReubicar = ref(false)
 
 const detallesTarimaOcupada = computed(() => {
-  if(!tarimaOcupadaSeleccionada.value) return null;
-  const viaje = viajes.value.find(v => v.id === tarimaOcupadaSeleccionada.value.viaje_id);
-  const es_maquila = viaje?.tipo_operacion === 'MAQUILA';
+  if(!tarimaOcupadaSeleccionada.value) return null
+  const viaje = viajes.value.find(v => v.id === tarimaOcupadaSeleccionada.value.viaje_id)
+  const es_maquila = viaje?.tipo_operacion === 'MAQUILA'
   let nombre_dueno = 'Desconocido'
   
   if (es_maquila) {
@@ -231,7 +346,6 @@ const colorClasesPorViaje = (viajeId, esMaquila) => {
   return colores[(viajeId || 0) % colores.length]
 }
 
-// Color base para el encabezado del modal de detalle
 const colorCabeceraModal = (viajeId, esMaquila) => {
   if (esMaquila) return 'bg-purple-100 text-purple-800'
   const colores = ['bg-blue-100 text-blue-800', 'bg-emerald-100 text-emerald-800', 'bg-orange-100 text-orange-800', 'bg-pink-100 text-pink-800', 'bg-cyan-100 text-cyan-800', 'bg-indigo-100 text-indigo-800']
@@ -240,31 +354,68 @@ const colorCabeceraModal = (viajeId, esMaquila) => {
 
 const manejarClickCelda = (celda) => {
   celdaSeleccionada.value = { x: celda.x, y: celda.y }
-  if(modoReubicar.value) { if(celda.ocupada) return alert("Esa posición ya está ocupada."); moverTarima(celda.x, celda.y); return; }
-  if (celda.ocupada) { tarimaOcupadaSeleccionada.value = celda.ocupada; modalOpcionesOcupado.value = true } 
-  else { tarimaAAsignarId.value = ''; modalAsignarVacio.value = true }
+  if(modoReubicar.value) { 
+    if(celda.ocupada) return alert("Esa posición ya está ocupada.")
+    moverTarima(celda.x, celda.y)
+    return
+  }
+  if (celda.ocupada) { 
+    tarimaOcupadaSeleccionada.value = celda.ocupada
+    modalOpcionesOcupado.value = true 
+  } else { 
+    tarimaAAsignarId.value = ''
+    modalAsignarVacio.value = true 
+  }
 }
 
 const asignarNuevaTarima = async () => {
-  if(!tarimaAAsignarId.value) return;
+  if(!tarimaAAsignarId.value) return
   cargando.value = true
   try {
-    const res = await fetch(`${API_URL}/cuarto-frio`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tarima_id: tarimaAAsignarId.value, fila_x: celdaSeleccionada.value.x, columna_y: celdaSeleccionada.value.y }) })
-    if(!res.ok) alert((await res.json()).detail)
-    modalAsignarVacio.value = false; await fetchCatalogos()
+    const res = await fetch(`${API_URL}/cuarto-frio`, { 
+      method: 'POST', 
+      headers: { 'Content-Type': 'application/json' }, 
+      body: JSON.stringify({ tarima_id: tarimaAAsignarId.value, fila_x: celdaSeleccionada.value.x, columna_y: celdaSeleccionada.value.y }) 
+    })
+    if(!res.ok) alert((await res.json()).detail || "Error al asignar tarima")
+    modalAsignarVacio.value = false
+    await fetchCatalogos()
   } finally { cargando.value = false }
 }
 
 const retirarTarima = async (destino) => {
-  cargando.value = true; try { await fetch(`${API_URL}/cuarto-frio/${tarimaOcupadaSeleccionada.value.tarima_id}?destino=${destino}`, { method: 'DELETE' }); modalOpcionesOcupado.value = false; await fetchCatalogos() } finally { cargando.value = false }
+  cargando.value = true
+  try { 
+    await fetch(`${API_URL}/cuarto-frio/${tarimaOcupadaSeleccionada.value.tarima_id}?destino=${destino}`, { method: 'DELETE' })
+    modalOpcionesOcupado.value = false
+    await fetchCatalogos() 
+  } finally { cargando.value = false }
 }
 
-const prepararReubicacion = () => { modoReubicar.value = true; modalOpcionesOcupado.value = false }
+const prepararReubicacion = () => { 
+  modoReubicar.value = true
+  modalOpcionesOcupado.value = false 
+}
 const moverTarima = async (nueva_x, nueva_y) => {
-  cargando.value = true; try { const res = await fetch(`${API_URL}/cuarto-frio/${tarimaOcupadaSeleccionada.value.tarima_id}/mover`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fila_x: nueva_x, columna_y: nueva_y }) }); if(!res.ok) alert((await res.json()).detail); modoReubicar.value = false; tarimaOcupadaSeleccionada.value = null; await fetchCatalogos() } finally { cargando.value = false }
+  cargando.value = true
+  try { 
+    const res = await fetch(`${API_URL}/cuarto-frio/${tarimaOcupadaSeleccionada.value.tarima_id}/mover`, { 
+      method: 'PUT', 
+      headers: { 'Content-Type': 'application/json' }, 
+      body: JSON.stringify({ fila_x: nueva_x, columna_y: nueva_y }) 
+    })
+    if(!res.ok) alert((await res.json()).detail || "Error al reubicar")
+    modoReubicar.value = false
+    tarimaOcupadaSeleccionada.value = null
+    await fetchCatalogos() 
+  } finally { cargando.value = false }
 }
-const cancelarReubicacion = () => { modoReubicar.value = false; tarimaOcupadaSeleccionada.value = null }
+const cancelarReubicacion = () => { 
+  modoReubicar.value = false
+  tarimaOcupadaSeleccionada.value = null 
+}
 
+// ================= EDICIONES =================
 const abrirEdicionTarima = (tarima) => {
   tarimaEditando.value = { 
     id: tarima.tarima_id || tarima.id, 
@@ -277,14 +428,17 @@ const abrirEdicionTarima = (tarima) => {
 const guardarEdicionTarima = async () => {
   cargando.value = true
   try {
-    await fetch(`${API_URL}/registros-bascula/${tarimaEditando.value.id}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(tarimaEditando.value)
+    const res = await fetch(`${API_URL}/registros-bascula/${tarimaEditando.value.id}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(tarimaEditando.value)
     })
-    mostrarModalEditarTarima.value = false
-    modalOpcionesOcupado.value = false
-    await fetchCatalogos()
+    if(!res.ok) {
+      const err = await res.json()
+      alert(err.detail || "Error al actualizar la tarima")
+    } else {
+      mostrarModalEditarTarima.value = false
+      modalOpcionesOcupado.value = false
+      await fetchCatalogos()
+    }
   } finally { cargando.value = false }
 }
 
@@ -299,12 +453,16 @@ const abrirEdicionPesada = (pesada) => {
 const guardarEdicionPesada = async () => {
   cargando.value = true
   try {
-    await fetch(`${API_URL}/registros-bascula/${pesadaEditandoViaje.value.id}`, {
-      method: 'PUT', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(pesadaEditandoViaje.value)
+    const res = await fetch(`${API_URL}/registros-bascula/${pesadaEditandoViaje.value.id}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(pesadaEditandoViaje.value)
     })
-    mostrarModalEdicionPesada.value = false
-    await fetchCatalogos()
+    if(!res.ok) {
+      const err = await res.json()
+      alert(err.detail || "Error de validación al editar la pesada")
+    } else {
+      mostrarModalEdicionPesada.value = false
+      await fetchCatalogos()
+    }
   } finally { cargando.value = false }
 }
 
@@ -312,8 +470,13 @@ const eliminarPesada = async (id) => {
   if (!confirm("¿Estás seguro de eliminar esta pesada? Se borrará permanentemente.")) return
   cargando.value = true
   try {
-    await fetch(`${API_URL}/registros-bascula/${id}`, { method: 'DELETE' })
-    await fetchCatalogos()
+    const res = await fetch(`${API_URL}/registros-bascula/${id}`, { method: 'DELETE' })
+    if(!res.ok) {
+      const err = await res.json()
+      alert(err.detail || "Error operativo al eliminar la pesada")
+    } else {
+      await fetchCatalogos()
+    }
   } finally { cargando.value = false }
 }
 
@@ -327,8 +490,10 @@ const abrirEdicionViaje = () => {
 }
 
 const guardarEdicionViaje = async () => {
-  if (viajeEditando.value.tipo_operacion === 'ACOPIO' && !viajeEditando.value.acopiador_id) return alert("Selecciona un acopiador");
-  if (viajeEditando.value.tipo_operacion === 'MAQUILA' && !viajeEditando.value.cliente_id) return alert("Selecciona un cliente");
+  if (viajeEditando.value.tipo_operacion === 'ACOPIO' && !viajeEditando.value.acopiador_id) 
+    return alert("Selecciona un acopiador")
+  if (viajeEditando.value.tipo_operacion === 'MAQUILA' && !viajeEditando.value.cliente_id) 
+    return alert("Selecciona un cliente")
 
   cargando.value = true
   try {
@@ -339,14 +504,17 @@ const guardarEdicionViaje = async () => {
       cliente_id: viajeEditando.value.tipo_operacion === 'MAQUILA' ? parseInt(viajeEditando.value.cliente_id) : null
     }
     
-    await fetch(`${API_URL}/viajes/${viajeEditando.value.id}`, {
+    const res = await fetch(`${API_URL}/viajes/${viajeEditando.value.id}`, {
       method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
     })
-    
-    mostrarModalEdicionViaje.value = false
-    await fetchCatalogos()
-    // Actualizar la vista actual con los nuevos datos
-    viajeSeleccionado.value = viajes.value.find(v => v.id === viajeEditando.value.id)
+    if(!res.ok) {
+      const err = await res.json()
+      alert(err.detail || "Error en el guardado del viaje")
+    } else {
+      mostrarModalEdicionViaje.value = false
+      await fetchCatalogos()
+      viajeSeleccionado.value = viajes.value.find(v => v.id === viajeEditando.value.id)
+    }
   } finally { cargando.value = false }
 }
 
@@ -354,18 +522,27 @@ const guardarEdicionViaje = async () => {
 
 <template>
   <div class="min-h-screen bg-gray-50 p-4 md:p-8 relative">
-    <div v-if="cargando" class="fixed inset-0 bg-white/60 backdrop-blur-sm z-50 flex items-center justify-center"><div class="bg-white p-6 rounded-3xl shadow-xl flex flex-col items-center"><div class="w-10 h-10 border-4 border-emerald-500 border-t-transparent rounded-full animate-spin mb-3"></div><span class="text-gray-700 font-medium">Cargando...</span></div></div>
+    <!-- Overlay de Carga -->
+    <div v-if="cargando" class="fixed inset-0 bg-white/60 backdrop-blur-sm z-50 flex items-center justify-center">
+      <div class="bg-white p-6 rounded-3xl shadow-xl flex flex-col items-center">
+        <div class="w-10 h-10 border-4 border-emerald-500 border-t-transparent rounded-full animate-spin mb-3"></div>
+        <span class="text-gray-700 font-medium">Cargando...</span>
+      </div>
+    </div>
 
+    <!-- Cabecera -->
     <div class="flex justify-between items-center mb-6">
       <h1 class="text-3xl font-light text-gray-800 tracking-tight mt-1">Módulo Operativo</h1>
       <span class="text-xs font-bold text-gray-400 bg-white px-4 py-2 border rounded-full shadow-sm">ZONA A</span>
     </div>
 
+    <!-- Selector de Módulo -->
     <div class="flex gap-4 mb-6">
       <button @click="moduloActual = 'bascula'" :class="moduloActual === 'bascula' ? 'bg-emerald-500 text-white' : 'bg-white text-gray-600'" class="px-6 py-3 rounded-2xl font-bold shadow-sm transition border">⚖️ Báscula de Recepción</button>
       <button @click="moduloActual = 'frio'" :class="moduloActual === 'frio' ? 'bg-blue-500 text-white' : 'bg-white text-gray-600'" class="px-6 py-3 rounded-2xl font-bold shadow-sm transition border">❄️ Cuarto Frío y Bodega</button>
     </div>
 
+    <!-- ================= MÓDULO CUARTO FRÍO ================= -->
     <div v-if="moduloActual === 'frio'" class="animate-fade-in space-y-8">
       
       <div v-if="modoReubicar" class="bg-orange-100 border border-orange-300 p-4 rounded-2xl flex justify-between items-center animate-pulse">
@@ -383,7 +560,6 @@ const guardarEdicionViaje = async () => {
                  class="h-28 rounded-xl border-2 flex flex-col items-center justify-center cursor-pointer transition-all active:scale-95 relative overflow-hidden"
                  :class="[
                    celda.ocupada ? (colorClasesPorViaje(celda.ocupada.viaje_id, celda.ocupada.es_maquila) + ' shadow-md') : 'border-dashed hover:border-emerald-300',
-                   // NUEVO: Resaltar columnas centrales (5 y 6) si NO están ocupadas
                    !celda.ocupada && (celda.x === 5 || celda.x === 6) ? 'bg-gray-200 border-gray-400' : (!celda.ocupada ? 'bg-gray-50 border-gray-300 hover:bg-emerald-50' : ''),
                    modoReubicar && celda.ocupada ? 'opacity-50 cursor-not-allowed' : ''
                  ]">
@@ -429,18 +605,9 @@ const guardarEdicionViaje = async () => {
       </div>
     </div>
 
-    <div v-if="mostrarModalEditarTarima" class="fixed inset-0 bg-gray-900 bg-opacity-50 flex items-center justify-center z-[60] p-4">
-      <div class="bg-white rounded-3xl w-full max-w-sm p-8 text-center shadow-2xl">
-        <h2 class="text-2xl font-bold mb-6 text-gray-800">Editar Tarima</h2>
-        <div class="space-y-4 text-left">
-          <div><label class="text-xs font-bold text-gray-400">PESO NETO (KG)</label><input type="number" step="0.1" v-model="tarimaEditando.peso_neto" class="w-full border p-3 rounded-xl font-bold text-lg outline-none focus:border-blue-500 text-gray-700"></div>
-          <div><label class="text-xs font-bold text-gray-400">TIPO DE FRUTA</label><select v-model="tarimaEditando.tipo_fruta_id" class="w-full border p-3 rounded-xl outline-none focus:border-blue-500 text-gray-700 font-medium"><option v-for="f in tiposFruta" :value="f.id" :key="f.id">{{f.nombre}}</option></select></div>
-        </div>
-        <div class="flex gap-4 mt-8"><button @click="mostrarModalEditarTarima = false" class="flex-1 bg-gray-100 py-3 rounded-xl font-bold text-gray-600 hover:bg-gray-200 transition">Cancelar</button><button @click="guardarEdicionTarima" class="flex-1 bg-blue-500 text-white font-bold py-3 rounded-xl hover:bg-blue-600 transition shadow-md">Guardar</button></div>
-      </div>
-    </div>
-
+    <!-- ================= MÓDULO BÁSCULA ================= -->
     <div v-if="moduloActual === 'bascula'">
+      <!-- LISTA DE VIAJES -->
       <div v-if="vistaActual === 'lista'" class="space-y-6 animate-fade-in">
         <div class="flex flex-col md:flex-row justify-between items-center gap-4 bg-white p-6 rounded-3xl border shadow-sm">
           <div>
@@ -454,7 +621,7 @@ const guardarEdicionViaje = async () => {
         </div>
 
         <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          <div v-for="(v, index) in viajesDelDia" :key="v.id" @click="abrirDetalleViaje(v)" class="bg-white p-6 rounded-3xl shadow-sm border cursor-pointer hover:shadow-md transition">
+          <div v-for="v in viajesDelDia" :key="v.id" @click="abrirDetalleViaje(v)" class="bg-white p-6 rounded-3xl shadow-sm border cursor-pointer hover:shadow-md transition">
             <div class="flex justify-between items-start mb-4">
               <span class="text-xs font-bold text-gray-400">ID #{{v.id}}</span>
               <div class="flex gap-2">
@@ -465,7 +632,7 @@ const guardarEdicionViaje = async () => {
             <h3 class="text-lg font-bold text-gray-800 mb-1">{{ nombreResponsableViaje(v) }}</h3>
             <p class="text-gray-500 text-sm mb-4">Placa: <span class="font-mono text-gray-700">{{ v.placa }}</span></p>
             <div class="flex justify-between items-center border-t pt-4 mt-4">
-              <span :class="v.estado === 'ACTIVO' ? 'text-emerald-600' : 'text-gray-500'" class="text-xs font-black uppercase">{{ v.estado }}</span>
+              <span :class="v.estado === 'ACTIVO' ? 'text-emerald-600' : (v.estado === 'CERRADO' ? 'text-orange-500' : 'text-purple-600')" class="text-xs font-black uppercase">{{ v.estado }}</span>
               <span class="text-emerald-500 text-sm font-bold">Ver Detalles →</span>
             </div>
           </div>
@@ -473,19 +640,27 @@ const guardarEdicionViaje = async () => {
         </div>
       </div>
 
+      <!-- DETALLE DE VIAJE -->
       <div v-if="vistaActual === 'detalle' && viajeSeleccionado" class="space-y-6 animate-fade-in">
         <div class="flex flex-col md:flex-row justify-between bg-white p-6 rounded-3xl border gap-4">
           <div>
             <button @click="vistaActual = 'lista'; viajeSeleccionado = null;" class="bg-gray-100 px-4 py-2 rounded-xl mb-3 text-sm font-medium">← Volver</button>
-            <div class="flex items-center gap-3"><h2 class="text-2xl font-light">Viaje <span class="font-medium font-mono">#{{ viajeSeleccionado.id }}</span></h2><span :class="viajeSeleccionado.tipo_operacion === 'MAQUILA' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'" class="px-3 py-1 rounded-md text-xs font-bold">{{ viajeSeleccionado.tipo_operacion }}</span></div>
+            <div class="flex items-center gap-3">
+              <h2 class="text-2xl font-light">Viaje <span class="font-medium font-mono">#{{ viajeSeleccionado.id }}</span></h2>
+              <span :class="viajeSeleccionado.tipo_operacion === 'MAQUILA' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'" class="px-3 py-1 rounded-md text-xs font-bold">{{ viajeSeleccionado.tipo_operacion }}</span>
+            </div>
             <p class="text-sm text-gray-500 mt-2 font-bold">{{ nombreResponsableViaje(viajeSeleccionado) }}</p>
           </div>
-          <div v-if="viajeSeleccionado.estado === 'ACTIVO'" class="flex gap-3">
-            <button @click="abrirEdicionViaje" class="bg-blue-50 text-blue-600 px-5 py-2.5 rounded-2xl font-bold hover:bg-blue-100 transition">✏️ Editar Viaje</button>
-            <button @click="cerrarViaje" class="bg-red-50 text-red-600 px-5 py-2.5 rounded-2xl font-bold hover:bg-red-100 transition">🔒 Finalizar</button>
+          <div class="flex gap-3 items-center">
+            <!-- Solo se permite editar si NO está CONCILIADO -->
+            <button v-if="viajeSeleccionado.estado !== 'CONCILIADO'" @click="abrirEdicionViaje" class="bg-blue-50 text-blue-600 px-5 py-2.5 rounded-2xl font-bold hover:bg-blue-100 transition">✏️ Editar Viaje</button>
+            <button v-if="viajeSeleccionado.estado === 'ACTIVO'" @click="cerrarViaje" class="bg-red-50 text-red-600 px-5 py-2.5 rounded-2xl font-bold hover:bg-red-100 transition">🔒 Finalizar</button>
+            <!-- Solo se permite eliminar si NO está CONCILIADO -->
+            <button v-if="viajeSeleccionado.estado !== 'CONCILIADO'" @click="eliminarViajeCompleto(viajeSeleccionado.id)" class="bg-red-600 text-white px-5 py-2.5 rounded-2xl font-bold hover:bg-red-700 transition">🗑️ Eliminar Viaje</button>
           </div>
         </div>
 
+        <!-- FORMULARIO DE PESADA (Solo viajes ACTIVOS) -->
         <div v-if="viajeSeleccionado.estado === 'ACTIVO'" class="bg-white p-8 rounded-3xl border max-w-2xl mx-auto shadow-sm">
           <div class="bg-blue-50 border border-blue-200 rounded-3xl p-6 text-center mb-6">
             <label class="block text-xs text-blue-500 font-bold uppercase mb-1">Peso Bruto (kg)</label>
@@ -501,6 +676,7 @@ const guardarEdicionViaje = async () => {
             <div>
               <label class="block text-xs font-bold text-gray-500 uppercase mb-1">Tipo de Fruta</label>
               <select v-model="nuevaPesada.tipo_fruta_id" class="w-full bg-gray-50 border p-3.5 rounded-2xl outline-none font-bold text-gray-700 focus:ring-2 focus:ring-blue-400">
+                <option value="" disabled>-- Seleccionar fruta --</option>
                 <option v-for="f in tiposFruta" :value="f.id" :key="f.id">{{ f.nombre }}</option>
               </select>
             </div>
@@ -540,8 +716,11 @@ const guardarEdicionViaje = async () => {
           </div>
         </div>
 
+        <!-- RESUMEN DE PESADAS -->
         <div class="bg-white rounded-3xl border overflow-hidden max-w-2xl mx-auto shadow-sm">
-          <div class="p-5 border-b bg-gray-50"><h3 class="font-bold text-gray-700">Resumen de Pesadas ({{ registrosDelViaje.length }})</h3></div>
+          <div class="p-5 border-b bg-gray-50">
+            <h3 class="font-bold text-gray-700">Resumen de Pesadas ({{ registrosDelViaje.length }})</h3>
+          </div>
           <table class="min-w-full text-left text-sm">
             <thead class="bg-gray-50 text-gray-400 text-[10px] uppercase font-black">
               <tr><th class="p-4">Tarima</th><th class="p-4 text-center">Cajas</th><th class="p-4 text-right">Peso Neto</th><th class="p-4 text-center">Acciones</th></tr>
@@ -552,9 +731,15 @@ const guardarEdicionViaje = async () => {
                 <td class="p-4 text-center font-medium text-gray-600">{{ r.cantidad_cajas }}</td>
                 <td class="p-4 text-right font-black text-emerald-600">{{ formatearPeso(r.peso_neto) }} kg</td>
                 <td class="p-4 text-center">
-                  <button @click="abrirEdicionPesada(r)" class="text-blue-500 hover:scale-110 transition mr-3">✏️</button>
-                  <button @click="eliminarPesada(r.id)" class="text-red-500 hover:scale-110 transition">🗑️</button>
+                  <template v-if="viajeSeleccionado.estado !== 'CONCILIADO'">
+                    <button @click="abrirEdicionPesada(r)" class="text-blue-500 hover:scale-110 transition mr-3">✏️</button>
+                    <button @click="eliminarPesada(r.id)" class="text-red-500 hover:scale-110 transition">🗑️</button>
+                  </template>
+                  <span v-else class="text-xs text-gray-400 font-bold uppercase">Consolidado</span>
                 </td>
+              </tr>
+              <tr v-if="registrosDelViaje.length === 0">
+                <td colspan="4" class="text-center p-8 text-gray-400 font-bold">No hay pesadas registradas para este viaje.</td>
               </tr>
             </tbody>
           </table>
@@ -562,6 +747,9 @@ const guardarEdicionViaje = async () => {
       </div>
     </div>
 
+    <!-- ================= MODALES GLOBALES ================= -->
+
+    <!-- Modal: Asignar Espacio Vacío -->
     <div v-if="modalAsignarVacio" class="fixed inset-0 bg-gray-900 bg-opacity-50 flex items-center justify-center z-50 p-4">
       <div class="bg-white rounded-3xl w-full max-w-md p-8 text-center shadow-2xl">
         <h2 class="text-2xl font-bold mb-2 text-gray-800">Asignar Espacio</h2>
@@ -577,6 +765,7 @@ const guardarEdicionViaje = async () => {
       </div>
     </div>
 
+    <!-- Modal: Opciones de Celda Ocupada -->
     <div v-if="modalOpcionesOcupado" class="fixed inset-0 bg-gray-900 bg-opacity-60 flex items-center justify-center z-50 p-4 backdrop-blur-sm">
       <div class="bg-white rounded-3xl w-full max-w-md overflow-hidden shadow-2xl">
         
@@ -605,6 +794,19 @@ const guardarEdicionViaje = async () => {
       </div>
     </div>
 
+    <!-- Modal: Editar Tarima -->
+    <div v-if="mostrarModalEditarTarima" class="fixed inset-0 bg-gray-900 bg-opacity-50 flex items-center justify-center z-[60] p-4">
+      <div class="bg-white rounded-3xl w-full max-w-sm p-8 text-center shadow-2xl">
+        <h2 class="text-2xl font-bold mb-6 text-gray-800">Editar Tarima</h2>
+        <div class="space-y-4 text-left">
+          <div><label class="text-xs font-bold text-gray-400">PESO NETO (KG)</label><input type="number" step="0.1" v-model="tarimaEditando.peso_neto" class="w-full border p-3 rounded-xl font-bold text-lg outline-none focus:border-blue-500 text-gray-700"></div>
+          <div><label class="text-xs font-bold text-gray-400">TIPO DE FRUTA</label><select v-model="tarimaEditando.tipo_fruta_id" class="w-full border p-3 rounded-xl outline-none focus:border-blue-500 text-gray-700 font-medium"><option v-for="f in tiposFruta" :value="f.id" :key="f.id">{{f.nombre}}</option></select></div>
+        </div>
+        <div class="flex gap-4 mt-8"><button @click="mostrarModalEditarTarima = false" class="flex-1 bg-gray-100 py-3 rounded-xl font-bold text-gray-600 hover:bg-gray-200 transition">Cancelar</button><button @click="guardarEdicionTarima" class="flex-1 bg-blue-500 text-white font-bold py-3 rounded-xl hover:bg-blue-600 transition shadow-md">Guardar</button></div>
+      </div>
+    </div>
+
+    <!-- Modal: Nuevo Viaje -->
     <div v-if="mostrarModalViaje" class="fixed inset-0 bg-gray-900 bg-opacity-50 flex items-center justify-center z-50 p-4">
       <div class="bg-white rounded-3xl w-full max-w-lg p-8 shadow-2xl">
         <h2 class="text-2xl font-bold mb-6 text-gray-800">Apertura de Viaje</h2>
@@ -628,6 +830,7 @@ const guardarEdicionViaje = async () => {
       </div>
     </div>
 
+    <!-- Modal: Editar Pesada del Viaje -->
     <div v-if="mostrarModalEdicionPesada" class="fixed inset-0 bg-gray-900 bg-opacity-60 flex items-center justify-center z-[60] p-4 backdrop-blur-sm">
       <div class="bg-white rounded-3xl w-full max-w-md p-8 shadow-2xl">
         <h2 class="text-2xl font-bold mb-6 text-gray-800">Corregir Pesada #{{pesadaEditandoViaje.numero_tarima}}</h2>
@@ -647,9 +850,8 @@ const guardarEdicionViaje = async () => {
       </div>
     </div>
 
-  </div>
-
-  <div v-if="mostrarModalEdicionViaje" class="fixed inset-0 bg-gray-900 bg-opacity-50 flex items-center justify-center z-[60] p-4 backdrop-blur-sm">
+    <!-- Modal: Editar Viaje -->
+    <div v-if="mostrarModalEdicionViaje" class="fixed inset-0 bg-gray-900 bg-opacity-50 flex items-center justify-center z-[60] p-4 backdrop-blur-sm">
       <div class="bg-white rounded-3xl w-full max-w-lg p-8 shadow-2xl">
         <h2 class="text-2xl font-bold mb-6 text-gray-800">Editar Viaje #{{viajeEditando.id}}</h2>
         <div class="space-y-5">
@@ -674,6 +876,7 @@ const guardarEdicionViaje = async () => {
         </div>
       </div>
     </div>
+  </div>
 </template>
 
 <style>

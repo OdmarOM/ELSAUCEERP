@@ -6,7 +6,6 @@ from pydantic import BaseModel
 from typing import Optional
 from datetime import datetime
 from fastapi.middleware.cors import CORSMiddleware
-from typing import Optional
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 import os
@@ -37,8 +36,7 @@ class ConciliacionData(BaseModel):
     nota_ids: list[int]
     peso_fisico: float
     peso_teorico: float
-    diferencia: float
-
+    difference: float
 
 class ViajeCreate(BaseModel):
     tipo_operacion: str
@@ -72,14 +70,13 @@ def crear_viaje(viaje: ViajeCreate):
         )
         conn.commit()
         nuevo_id = cursor.lastrowid
-        
         cursor.execute("SELECT * FROM viaje WHERE id = ?", (nuevo_id,))
         viaje_creado = dict(cursor.fetchone())
-        conn.close()
         return viaje_creado
     except Exception as e:
-        conn.close()
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
 
 @app.get("/api/viajes")
 def listar_viajes():
@@ -97,11 +94,37 @@ def cerrar_viaje(viaje_id: int):
     try:
         cursor.execute("UPDATE viaje SET estado = 'CERRADO' WHERE id = ?", (viaje_id,))
         conn.commit()
-        conn.close()
         return {"mensaje": "Viaje cerrado exitosamente"}
     except Exception as e:
-        conn.close()
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
+
+@app.delete("/api/viajes/{viaje_id}")
+def eliminar_viaje(viaje_id: int):
+    conn = get_db()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT estado FROM viaje WHERE id = ?", (viaje_id,))
+        row = cursor.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Viaje no encontrado")
+        if row['estado'] == 'CONCILIADO':
+            raise HTTPException(status_code=400, detail="No se puede eliminar un viaje que ya se encuentra consolidado contablemente.")
+        
+        cursor.execute("DELETE FROM cuartofrio WHERE tarima_id IN (SELECT id FROM registrobascula WHERE viaje_id = ?)", (viaje_id,))
+        cursor.execute("DELETE FROM registrobascula WHERE viaje_id = ?", (viaje_id,))
+        cursor.execute("UPDATE notaproveedor SET viaje_id = NULL WHERE viaje_id = ?", (viaje_id,))
+        cursor.execute("DELETE FROM viaje WHERE id = ?", (viaje_id,))
+        conn.commit()
+        return {"status": "ok", "mensaje": "Viaje eliminado correctamente"}
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
 
 # ==========================================
 # ACOPIADORES
@@ -187,11 +210,11 @@ def crear_cliente(cliente: dict):
         cursor.execute("INSERT INTO cliente (nombre, contacto) VALUES (?, ?)", (cliente['nombre'], cliente.get('contacto', '')))
         conn.commit()
         nuevo_id = cursor.lastrowid
-        conn.close()
         return {"id": nuevo_id, **cliente}
     except Exception as e:
-        conn.close()
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
 
 @app.delete("/api/clientes/{id}")
 def eliminar_cliente(id: int):
@@ -235,9 +258,6 @@ def eliminar_tipo_fruta(fruta_id: int):
     return {"mensaje": "Tipo de fruta eliminado"}
 
 # ==========================================
-# NOTAS DE PROVEEDOR
-# ==========================================
-# ==========================================
 # NOTAS DE PROVEEDOR Y CONCILIACIÓN
 # ==========================================
 @app.post("/api/notas", status_code=201)
@@ -245,6 +265,16 @@ def crear_nota(nota: dict):
     conn = get_db()
     cursor = conn.cursor()
     try:
+        cajas = int(nota.get('cantidad_cajas', 0))
+        t_tarima = float(nota.get('tara_tarima', 0.0))
+        t_caja = float(nota.get('tara_caja', 0.0))
+        p_bruto = float(nota.get('peso_bruto', 0.0))
+        precio = float(nota.get('precio_kg', 0.0))
+        
+        tara_total = t_tarima + (t_caja * cajas)
+        peso_neto = max(0.0, p_bruto - tara_total) if p_bruto > 0 else float(nota.get('peso_neto', 0.0))
+        total_monetario = peso_neto * precio
+
         cursor.execute("""
             INSERT INTO notaproveedor (
                 viaje_id, proveedor_id, tipo_fruta_id, fecha, cantidad_cajas, 
@@ -253,42 +283,37 @@ def crear_nota(nota: dict):
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDIENTE', ?)
         """, (
             nota.get('viaje_id'), nota['proveedor_id'], nota['tipo_fruta_id'],
-            datetime.now().isoformat(), nota.get('cantidad_cajas', 0), 0, 0, 0, 
-            nota['peso_neto'], nota['precio_kg'], nota['total_monetario'], nota.get('folio', 'S/F')
+            nota.get('fecha', datetime.now().isoformat()), cajas, t_tarima, t_caja, p_bruto, 
+            peso_neto, precio, total_monetario, nota.get('folio', 'S/F')
         ))
         conn.commit()
         nuevo_id = cursor.lastrowid
-        conn.close()
         return {"id": nuevo_id, **nota}
     except Exception as e:
-        conn.close()
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
 
 @app.post("/api/viajes/{viaje_id}/conciliar")
 def conciliar_viaje(viaje_id: int, data: ConciliacionData):
     conn = get_db()
     cursor = conn.cursor()
     try:
-        # 1. Actualizamos el viaje a CONCILIADO y guardamos los pesos finales
         cursor.execute("""
             UPDATE viaje 
             SET estado = 'CONCILIADO', peso_total_fisico = ?, peso_total_teorico = ?, diferencia_peso = ?
             WHERE id = ?
-        """, (data.peso_fisico, data.peso_teorico, data.diferencia, viaje_id))
+        """, (data.peso_fisico, data.peso_teorico, data.difference, viaje_id))
         
-        # 2. Le asignamos este viaje a las notas que el administrador seleccionó
         for nota_id in data.nota_ids:
             cursor.execute("UPDATE notaproveedor SET viaje_id = ? WHERE id = ?", (viaje_id, nota_id))
             
         conn.commit()
-        conn.close()
         return {"mensaje": "Viaje conciliado exitosamente"}
     except Exception as e:
-        conn.close()
         raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/notas")
-# ... (El resto del código listar_notas se queda igual)
+    finally:
+        conn.close()
 
 @app.get("/api/notas")
 def listar_notas():
@@ -343,12 +368,11 @@ def registrar_tarima(tarima: dict):
         ))
         conn.commit()
         nuevo_id = cursor.lastrowid
-        conn.close()
         return {"id": nuevo_id, "mensaje": "Pesada registrada correctamente"}
     except Exception as e:
-        conn.close()
         raise HTTPException(status_code=500, detail=str(e))
-
+    finally:
+        conn.close()
 
 @app.get("/api/registros-bascula")
 def listar_tarimas():
@@ -371,15 +395,12 @@ def registrar_pago(pago: PagoData):
     conn = get_db()
     cursor = conn.cursor()
     try:
-        # 1. Registrar el pago
         cursor.execute("""
             INSERT INTO pago (proveedor_id, folio_pago, fecha_pago, monto_total, metodo_pago)
             VALUES (?, ?, ?, ?, ?)
         """, (pago.proveedor_id, pago.folio_pago, datetime.now().isoformat(), pago.monto_total, pago.metodo_pago))
-        
         pago_id = cursor.lastrowid
 
-        # 2. Actualizar las notas asociadas para marcarlas como pagadas
         for nota_id in pago.nota_ids:
             cursor.execute("""
                 UPDATE notaproveedor
@@ -388,11 +409,11 @@ def registrar_pago(pago: PagoData):
             """, (pago_id, nota_id))
         
         conn.commit()
-        conn.close()
         return {"mensaje": "Pago registrado exitosamente", "id": pago_id}
     except Exception as e:
-        conn.close()
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
 
 @app.get("/api/pagos")
 def listar_pagos():
@@ -407,14 +428,13 @@ def listar_pagos():
     conn.close()
     return data
 
-    # ==========================================
+# ==========================================
 # CUARTO FRÍO (UBICACIONES)
 # ==========================================
 @app.get("/api/cuarto-frio")
 def listar_cuarto_frio():
     conn = get_db()
     cursor = conn.cursor()
-    # Traemos la información de la ubicación y hacemos JOIN para saber qué tarima y viaje es
     cursor.execute("""
         SELECT c.*, r.numero_tarima, r.viaje_id, t.nombre as fruta_nombre
         FROM cuartofrio c
@@ -430,7 +450,6 @@ def asignar_ubicacion(datos: dict):
     conn = get_db()
     cursor = conn.cursor()
     try:
-        # Verificar si la posición (x, y) ya está ocupada
         cursor.execute("SELECT id FROM cuartofrio WHERE fila_x = ? AND columna_y = ?", (datos['fila_x'], datos['columna_y']))
         if cursor.fetchone():
             raise Exception("Esa ubicación en el cuarto frío ya está ocupada.")
@@ -439,34 +458,30 @@ def asignar_ubicacion(datos: dict):
             INSERT INTO cuartofrio (fila_x, columna_y, tarima_id)
             VALUES (?, ?, ?)
         """, (datos['fila_x'], datos['columna_y'], datos['tarima_id']))
-        
-        # Actualizar el estado de la tarima
         cursor.execute("UPDATE registrobascula SET estado_ubicacion = 'EN_CUARTO_FRIO' WHERE id = ?", (datos['tarima_id'],))
-        
         conn.commit()
-        conn.close()
         return {"mensaje": "Ubicación asignada correctamente"}
     except Exception as e:
-        conn.close()
         raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        conn.close()
 
 @app.put("/api/cuarto-frio/{tarima_id}/mover")
 def mover_tarima(tarima_id: int, datos: dict):
     conn = get_db()
     cursor = conn.cursor()
     try:
-        # Verificar si destino está libre
         cursor.execute("SELECT id FROM cuartofrio WHERE fila_x = ? AND columna_y = ?", (datos['fila_x'], datos['columna_y']))
         if cursor.fetchone():
             raise Exception("La ubicación destino ya está ocupada.")
             
         cursor.execute("UPDATE cuartofrio SET fila_x = ?, columna_y = ? WHERE tarima_id = ?", (datos['fila_x'], datos['columna_y'], tarima_id))
         conn.commit()
-        conn.close()
         return {"mensaje": "Movimiento exitoso"}
     except Exception as e:
-        conn.close()
         raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        conn.close()
 
 @app.delete("/api/cuarto-frio/{tarima_id}")
 def sacar_tarima_frio(tarima_id: int, destino: str = "EN_BODEGA"):
@@ -476,11 +491,11 @@ def sacar_tarima_frio(tarima_id: int, destino: str = "EN_BODEGA"):
         cursor.execute("DELETE FROM cuartofrio WHERE tarima_id = ?", (tarima_id,))
         cursor.execute("UPDATE registrobascula SET estado_ubicacion = ? WHERE id = ?", (destino, tarima_id))
         conn.commit()
-        conn.close()
         return {"mensaje": f"Tarima enviada a {destino}"}
     except Exception as e:
-        conn.close()
         raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        conn.close()
 
 # ==========================================
 # CONEXIÓN CON BÁSCULA ESP32
@@ -490,7 +505,6 @@ peso_actual_bascula = 0.0
 @app.post("/api/bascula/leer")
 def recibir_peso_esp32(datos: dict):
     global peso_actual_bascula
-    # Lee el campo 'peso' que envía el ESP32
     peso_actual_bascula = float(datos.get("peso", 0.0))
     return {"mensaje": "Peso recibido", "peso": peso_actual_bascula}
 
@@ -501,8 +515,6 @@ def obtener_peso_actual():
 # ==========================================
 # ENDPOINTS DE EDICIÓN (PUT)
 # ==========================================
-
-# Editar Catálogos (Acopiadores, Proveedores, Clientes, Fruta)
 @app.put("/api/acopiadores/{id}")
 def editar_acopiador(id: int, data: dict):
     conn = get_db(); cursor = conn.cursor()
@@ -531,21 +543,35 @@ def editar_fruta(id: int, data: dict):
     conn.commit(); conn.close()
     return {"status": "ok"}
 
-# Editar Notas (Corregir pesos, precios o folios)
 @app.put("/api/notas/{id}")
 def editar_nota(id: int, nota: dict):
     conn = get_db(); cursor = conn.cursor()
-    cursor.execute("""
-        UPDATE notaproveedor 
-        SET folio = ?, proveedor_id = ?, tipo_fruta_id = ?, 
-            cantidad_cajas = ?, peso_neto = ?, precio_kg = ?, total_monetario = ?
-        WHERE id = ?
-    """, (nota['folio'], nota['proveedor_id'], nota['tipo_fruta_id'], 
-        nota['cantidad_cajas'], nota['peso_neto'], nota['precio_kg'], nota['total_monetario'], id))
-    conn.commit(); conn.close()
-    return {"status": "ok"}
+    try:
+        cajas = int(nota.get('cantidad_cajas', 0))
+        t_tarima = float(nota.get('tara_tarima', 0.0))
+        t_caja = float(nota.get('tara_caja', 0.0))
+        p_bruto = float(nota.get('peso_bruto', 0.0))
+        precio = float(nota.get('precio_kg', 0.0))
+        
+        tara_total = t_tarima + (t_caja * cajas)
+        peso_neto = max(0.0, p_bruto - tara_total) if p_bruto > 0 else float(nota.get('peso_neto', 0.0))
+        total_monetario = peso_neto * precio
 
-# Editar / Anular Pagos (Incluyendo la fecha de pago)
+        cursor.execute("""
+            UPDATE notaproveedor 
+            SET folio = ?, proveedor_id = ?, tipo_fruta_id = ?, 
+                cantidad_cajas = ?, tara_tarima = ?, tara_caja = ?, 
+                peso_bruto = ?, peso_neto = ?, precio_kg = ?, total_monetario = ?, fecha = ?
+            WHERE id = ?
+        """, (nota['folio'], nota['proveedor_id'], nota['tipo_fruta_id'], 
+            cajas, t_tarima, t_caja, p_bruto, peso_neto, precio, total_monetario, nota.get('fecha', datetime.now().isoformat()), id))
+        conn.commit()
+        return {"status": "ok"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
+
 @app.put("/api/pagos/{id}")
 def editar_pago(id: int, data: dict):
     conn = get_db(); cursor = conn.cursor()
@@ -554,14 +580,11 @@ def editar_pago(id: int, data: dict):
     conn.commit(); conn.close()
     return {"status": "ok"}
 
-# DESHACER CONCILIACIÓN (Si se tomó una nota que no era)
 @app.post("/api/viajes/{id}/deshacer-conciliacion")
 def deshacer_conciliacion(id: int):
     conn = get_db(); cursor = conn.cursor()
     try:
-        # 1. Liberar las notas asociadas al viaje
         cursor.execute("UPDATE notaproveedor SET viaje_id = NULL WHERE viaje_id = ?", (id,))
-        # 2. Regresar el viaje a estado CERRADO y limpiar datos de conciliación
         cursor.execute("""
             UPDATE viaje 
             SET estado = 'CERRADO', peso_total_teorico = 0, diferencia_peso = 0 
@@ -575,25 +598,25 @@ def deshacer_conciliacion(id: int):
     finally:
         conn.close()
 
-# Editar una tarima (Para procesar Maquila o Corregir Errores)
 @app.put("/api/registros-bascula/{id}")
 def editar_tarima(id: int, data: dict):
     conn = get_db()
     cursor = conn.cursor()
     try:
-        # Obtener datos actuales para no sobreescribir con vacíos
+        cursor.execute("SELECT v.estado FROM registrobascula r JOIN viaje v ON r.viaje_id = v.id WHERE r.id = ?", (id,))
+        v_row = cursor.fetchone()
+        if v_row and v_row['estado'] == 'CONCILIADO':
+            raise HTTPException(status_code=400, detail="Bloqueado: Esta pesada pertenece a un viaje ya consolidado contablemente.")
+
         cursor.execute("SELECT * FROM registrobascula WHERE id = ?", (id,))
         actual = dict(cursor.fetchone())
         
-        # Mezclar datos nuevos con los actuales
         tipo_fruta_id = data.get('tipo_fruta_id', actual['tipo_fruta_id'])
         cantidad_cajas = data.get('cantidad_cajas', actual['cantidad_cajas'])
         peso_bruto = data.get('peso_bruto', actual['peso_bruto'])
         tara_caja = data.get('tara_caja', actual['tara_caja'])
         tara_tarima = data.get('tara_tarima', actual['tara_tarima'])
         
-        # Si envían peso_neto directo (como en el Cuarto Frío), lo usamos. 
-        # Si envían peso_bruto (como en la edición completa), lo recalculamos.
         if 'peso_bruto' in data and 'tara_caja' in data:
             tara_total = tara_tarima + (tara_caja * cantidad_cajas)
             peso_neto = peso_bruto - tara_total
@@ -612,18 +635,24 @@ def editar_tarima(id: int, data: dict):
         """, (peso_neto, tipo_fruta_id, cantidad_cajas, peso_bruto, tara_caja, tara_tarima, tara_total, promedio, id))
         conn.commit()
         return {"status": "ok", "mensaje": "Tarima actualizada"}
+    except HTTPException as he:
+        raise he
     except Exception as e:
         conn.rollback()
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         conn.close()
 
-# Editar Viajes
 @app.put("/api/viajes/{id}")
 def editar_viaje(id: int, data: dict):
     conn = get_db()
     cursor = conn.cursor()
     try:
+        cursor.execute("SELECT estado FROM viaje WHERE id = ?", (id,))
+        row = cursor.fetchone()
+        if row and row['estado'] == 'CONCILIADO':
+            raise HTTPException(status_code=400, detail="Bloqueado: No se puede modificar un viaje que ya se encuentra consolidado.")
+
         acopiador_id = data.get('acopiador_id') if data.get('acopiador_id') else None
         cliente_id = data.get('cliente_id') if data.get('cliente_id') else None
         
@@ -634,39 +663,41 @@ def editar_viaje(id: int, data: dict):
         """, (data['tipo_operacion'], acopiador_id, cliente_id, data.get('placa', ''), id))
         conn.commit()
         return {"status": "ok", "mensaje": "Viaje actualizado"}
+    except HTTPException as he:
+        raise he
     except Exception as e:
         conn.rollback()
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         conn.close()
 
-# Eliminar una pesada/tarima
 @app.delete("/api/registros-bascula/{id}")
 def eliminar_tarima(id: int):
     conn = get_db()
     cursor = conn.cursor()
     try:
-        # Si está en el cuarto frío, la sacamos primero para evitar errores
+        cursor.execute("SELECT v.estado FROM registrobascula r JOIN viaje v ON r.viaje_id = v.id WHERE r.id = ?", (id,))
+        v_row = cursor.fetchone()
+        if v_row and v_row['estado'] == 'CONCILIADO':
+            raise HTTPException(status_code=400, detail="Bloqueado: No se puede eliminar pesadas de viajes consolidados.")
+
         cursor.execute("DELETE FROM cuartofrio WHERE tarima_id = ?", (id,))
-        # Eliminamos el registro de la báscula
         cursor.execute("DELETE FROM registrobascula WHERE id = ?", (id,))
         conn.commit()
         return {"status": "ok", "mensaje": "Pesada eliminada correctamente"}
+    except HTTPException as he:
+        raise he
     except Exception as e:
         conn.rollback()
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         conn.close()
-# ==========================================
-# ANULAR PAGO (Deshacer)
-# ==========================================
+
 @app.delete("/api/pagos/{id}")
 def anular_pago(id: int):
     conn = get_db(); cursor = conn.cursor()
     try:
-        # 1. Liberar las notas asociadas a este pago (las regresamos a PENDIENTE)
         cursor.execute("UPDATE notaproveedor SET estado_pago = 'PENDIENTE', pago_id = NULL WHERE pago_id = ?", (id,))
-        # 2. Eliminar el registro del pago
         cursor.execute("DELETE FROM pago WHERE id = ?", (id,))
         conn.commit()
         return {"status": "ok", "mensaje": "Pago anulado y notas liberadas"}
@@ -679,14 +710,11 @@ def anular_pago(id: int):
 # ==========================================
 # SERVIDOR DE FRONTEND (VUE DIST)
 # ==========================================
-# Ruta absoluta a la carpeta "dist" que copiaste
 dist_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "dist")
 
-# Solo monta la carpeta si existe (para evitar errores)
 if os.path.isdir(dist_path):
     app.mount("/assets", StaticFiles(directory=os.path.join(dist_path, "assets")), name="assets")
     
-    # Esta regla atrapa cualquier ruta y muestra la página web de Vue
     @app.exception_handler(404)
     async def not_found_exception_handler(request, exc):
         return FileResponse(os.path.join(dist_path, "index.html"))
