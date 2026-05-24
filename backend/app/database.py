@@ -1,3 +1,4 @@
+# database.py
 import sqlite3
 from pathlib import Path
 
@@ -104,7 +105,7 @@ def create_db_and_tables():
         FOREIGN KEY(pago_id) REFERENCES pago(id)
     )""")
 
-    # 9. Registro de Báscula (Pesadas / Tarimas)
+    # 9. Registro de Báscula (Pesadas / Tarimas) - Se mantiene como histórico
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS registrobascula (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -126,14 +127,32 @@ def create_db_and_tables():
         FOREIGN KEY(tipo_fruta_id) REFERENCES tipofruta(id)
     )""")
 
-    # 10. Cuarto Frío (Ubicaciones)
+    # 10. INVENTARIO FRÍO - Tabla independiente para gestión del cuarto frío
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS inventario_frio (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        viaje_id INTEGER,
+        tipo_fruta_id INTEGER,
+        numero_tarima_display TEXT,
+        cantidad_cajas INTEGER,
+        peso_neto REAL,
+        fecha_ingreso DATETIME,
+        notas_referencia TEXT,
+        origen TEXT DEFAULT 'PESADA',
+        origen_id INTEGER,
+        activo INTEGER DEFAULT 1,
+        FOREIGN KEY(viaje_id) REFERENCES viaje(id),
+        FOREIGN KEY(tipo_fruta_id) REFERENCES tipofruta(id)
+    )""")
+
+    # 11. Cuarto Frío - Ahora apunta a inventario_frio
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS cuartofrio (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         fila_x INTEGER,
         columna_y INTEGER,
-        tarima_id INTEGER UNIQUE,
-        FOREIGN KEY(tarima_id) REFERENCES registrobascula(id)
+        inventario_frio_id INTEGER UNIQUE,
+        FOREIGN KEY(inventario_frio_id) REFERENCES inventario_frio(id)
     )""")
 
     conn.commit()

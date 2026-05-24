@@ -379,6 +379,10 @@ const guardarEdicionPesada = async () => {
                     {{ n.estado_pago }}
                   </span>
                 </td>
+                <td class="p-3 text-right">
+                  <button @click="prepararEdicionNota(n)" class="text-blue-500 font-bold mr-3 hover:text-blue-700">✏️</button>
+                  <button @click="eliminarNota(n.id)" :disabled="cargando" class="text-red-500 hover:text-red-700 font-medium">❌</button>
+                </td>
               </tr>
               <tr v-if="notasHistorialFiltradas.length === 0"><td colspan="8" class="p-6 text-center text-gray-400">No se encontraron notas registradas en esta fecha seleccionada.</td></tr>
             </tbody>
@@ -552,6 +556,29 @@ const guardarEdicionPesada = async () => {
             </li>
           </ul>
         </div>
+
+          <div class="bg-white p-6 rounded-3xl shadow-sm border">
+        <h2 class="text-lg font-bold mb-4 text-green-700">Tipos de Fruta</h2>
+        <form @submit.prevent="agregarCatalogo('tipos-fruta', nuevoTipoFruta, nuevoTipoFruta, {nombre:'', descripcion:''})" class="flex flex-col gap-2 mb-4">
+          <input v-model="nuevoTipoFruta.nombre" placeholder="Nombre (ej. negra proceso)" class="border p-3 rounded-xl text-sm outline-none" required />
+          <div class="flex gap-2">
+            <input v-model="nuevoTipoFruta.descripcion" placeholder="Descripción (opcional)" class="border p-3 rounded-xl w-full text-sm outline-none" />
+            <button type="submit" class="bg-green-500 text-white px-4 rounded-xl font-bold hover:bg-green-600">+</button>
+          </div>
+        </form>
+        <ul class="text-sm text-gray-600 space-y-2 max-h-40 overflow-y-auto">
+          <li v-for="f in tiposFruta" :key="f.id" class="flex justify-between border-b pb-2 items-center">
+            <div>
+              <span class="font-medium text-gray-800">{{f.nombre}}</span>
+              <span v-if="f.descripcion" class="block text-xs text-gray-400">{{f.descripcion}}</span>
+            </div>
+            <div>
+              <button @click="abrirEdicionCatalogo('tipos-fruta', f)" class="text-blue-500 mr-3 text-lg hover:scale-110 transition">✏️</button>
+              <button @click="eliminarCatalogo('tipos-fruta', f.id)" class="text-red-500 text-sm font-bold">X</button>
+            </div>
+          </li>
+        </ul>
+      </div>
       </div>
     </div>
 
