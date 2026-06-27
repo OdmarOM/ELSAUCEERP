@@ -5,7 +5,15 @@
       <p class="text-gray-500 text-xl">Selecciona tu módulo de trabajo</p>
     </div>
 
-    <div class="grid grid-cols-1 md:grid-cols-2 gap-8 w-full max-w-4xl">
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8 w-full max-w-6xl">
+      <router-link to="/dashboard" class="group bg-white p-10 rounded-3xl shadow-sm border border-gray-100 hover:shadow-xl hover:border-blue-200 transition-all cursor-pointer text-center flex flex-col items-center">
+        <div class="w-24 h-24 bg-blue-50 rounded-full flex items-center justify-center mb-6 group-hover:scale-110 transition-transform">
+          <span class="text-5xl">📈</span>
+        </div>
+        <h2 class="text-3xl font-bold text-gray-800 mb-2">Dashboard</h2>
+        <p class="text-gray-500 text-lg">Métricas y Reportes</p>
+      </router-link>
+
       <router-link to="/bascula" class="group bg-white p-10 rounded-3xl shadow-sm border border-gray-100 hover:shadow-xl hover:border-emerald-200 transition-all cursor-pointer text-center flex flex-col items-center">
         <div class="w-24 h-24 bg-emerald-50 rounded-full flex items-center justify-center mb-6 group-hover:scale-110 transition-transform">
           <span class="text-5xl">⚖️</span>

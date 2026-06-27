@@ -1,8 +1,30 @@
 # database.py
 import sqlite3
 from pathlib import Path
+from contextlib import contextmanager
+import threading
+from .config import settings
 
-DB_PATH = Path(__file__).parent.parent / "data" / "sauce_erp.db"
+DB_PATH = settings.DB_PATH
+
+# Lock para thread-safety en SQLite
+db_lock = threading.Lock()
+
+@contextmanager
+def get_db():
+    """Context manager para conexiones a base de datos con thread-safety"""
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    # Habilitar WAL mode para mejor concurrencia
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA foreign_keys=ON")
+    
+    try:
+        with db_lock:
+            yield conn
+    finally:
+        conn.close()
 
 def create_db_and_tables():
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -154,6 +176,22 @@ def create_db_and_tables():
         inventario_frio_id INTEGER UNIQUE,
         FOREIGN KEY(inventario_frio_id) REFERENCES inventario_frio(id)
     )""")
+
+    # ================= ÍNDICES PARA OPTIMIZACIÓN =================
+    # Índices para consultas frecuentes
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_viaje_estado ON viaje(estado)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_viaje_tipo ON viaje(tipo_operacion)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_viaje_fecha ON viaje(fecha_entrada)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_notaproveedor_viaje ON notaproveedor(viaje_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_notaproveedor_proveedor ON notaproveedor(proveedor_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_notaproveedor_pago ON notaproveedor(pago_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_notaproveedor_estado ON notaproveedor(estado_pago)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_registrobascula_viaje ON registrobascula(viaje_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_inventario_frio_viaje ON inventario_frio(viaje_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_inventario_frio_activo ON inventario_frio(activo)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_inventario_frio_tipo ON inventario_frio(tipo_fruta_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_pago_proveedor ON pago(proveedor_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_cuartofrio_ubicacion ON cuartofrio(fila_x, columna_y)")
 
     conn.commit()
     conn.close()
