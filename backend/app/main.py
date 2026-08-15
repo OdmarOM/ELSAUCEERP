@@ -619,8 +619,15 @@ def crear_nota(nota: dict):
                 fecha_a_guardar, cajas, t_tarima, t_caja, p_bruto,
                 peso_neto, precio, total_monetario, nota.get('folio', 'S/F')
             ))
-            conn.commit()
             nuevo_id = cursor.lastrowid
+            
+            # Crear cuenta por pagar asociada automáticamente
+            cursor.execute("""
+                INSERT INTO cuenta_pagar (proveedor_id, notaproveedor_id, fecha_emision, monto_total, saldo_pendiente, estado)
+                VALUES (?, ?, ?, ?, ?, 'PENDIENTE')
+            """, (nota['proveedor_id'], nuevo_id, fecha_a_guardar, total_monetario, total_monetario))
+            
+            conn.commit()
             return {"id": nuevo_id, **nota}
         except Exception as e:
             logger.error(f"Error creando nota: {e}")
@@ -1572,17 +1579,20 @@ def crear_viaje_salida(viaje: dict):
     with get_db() as conn:
         cursor = conn.cursor()
         try:
-            fecha_actual = datetime.now().strftime('%Y-%m-%d')
+            fecha_actual = viaje.get('fecha_salida')
+            if not fecha_actual:
+                fecha_actual = datetime.now().strftime('%Y-%m-%d')
             cursor.execute("""
                 INSERT INTO viaje (
-                    cliente_id, placa, fecha_entrada, fecha_salida, estado, tipo, tipo_operacion, precio_kg_venta
-                ) VALUES (?, ?, ?, ?, 'ACTIVO', 'SALIDA', 'SALIDA', ?)
+                    cliente_id, placa, fecha_entrada, fecha_salida, estado, tipo, tipo_operacion, precio_kg_venta, numero_guia
+                ) VALUES (?, ?, ?, ?, 'ACTIVO', 'SALIDA', 'SALIDA', ?, ?)
             """, (
                 viaje['cliente_id'],
                 viaje.get('placa', 'N/A'),
                 fecha_actual,
                 fecha_actual,
-                viaje.get('precio_kg_venta', 0.0)
+                viaje.get('precio_kg_venta', 0.0),
+                viaje.get('numero_guia', '')
             ))
             conn.commit()
             nuevo_id = cursor.lastrowid
@@ -1599,9 +1609,17 @@ def actualizar_viaje_salida(id: int, viaje: dict):
         try:
             cursor.execute("""
                 UPDATE viaje
-                SET cliente_id = ?, placa = ?, estado = ?, precio_kg_venta = ?
+                SET cliente_id = ?, placa = ?, estado = ?, precio_kg_venta = ?, fecha_salida = ?, numero_guia = ?
                 WHERE id = ?
-            """, (viaje['cliente_id'], viaje.get('placa', 'N/A'), viaje.get('estado', 'ACTIVO'), viaje.get('precio_kg_venta', 0.0), id))
+            """, (
+                viaje['cliente_id'],
+                viaje.get('placa', 'N/A'),
+                viaje.get('estado', 'ACTIVO'),
+                viaje.get('precio_kg_venta', 0.0),
+                viaje.get('fecha_salida'),
+                viaje.get('numero_guia', ''),
+                id
+            ))
             conn.commit()
             return {"status": "ok"}
         except Exception as e:
@@ -1754,6 +1772,8 @@ class ViajeSalidaCreate(BaseModel):
     cliente_id: Optional[int] = None
     placa: str = ""
     precio_kg_venta: float = 0.0
+    fecha_salida: Optional[str] = None
+    numero_guia: Optional[str] = ""
 
 class TarimasSalidaRequest(BaseModel):
     inventario_frio_ids: List[int]
@@ -1762,6 +1782,11 @@ class TarimasSalidaRequest(BaseModel):
 
 class CobroClienteCreate(BaseModel):
     monto_cobrado: float
+    metodo_pago: str
+    referencia: str = ""
+
+class AbonoProveedorCreate(BaseModel):
+    monto_pagado: float
     metodo_pago: str
     referencia: str = ""
 
@@ -1782,11 +1807,11 @@ class PesadaSalidaRequest(BaseModel):
 def crear_viaje_salida(viaje: ViajeSalidaCreate):
     with get_db() as conn:
         cursor = conn.cursor()
-        fecha_actual = datetime.now().isoformat()
+        fecha_actual = viaje.fecha_salida if viaje.fecha_salida else datetime.now().strftime('%Y-%m-%d')
         try:
             cursor.execute(
-                "INSERT INTO viaje (cliente_id, placa, fecha_entrada, estado, tipo_operacion, tipo, precio_kg_venta) VALUES (?, ?, ?, 'ACTIVO', 'SALIDA', 'SALIDA', ?)",
-                (viaje.cliente_id, viaje.placa, fecha_actual, viaje.precio_kg_venta)
+                "INSERT INTO viaje (cliente_id, placa, fecha_entrada, fecha_salida, estado, tipo_operacion, tipo, precio_kg_venta, numero_guia) VALUES (?, ?, ?, ?, 'ACTIVO', 'SALIDA', 'SALIDA', ?, ?)",
+                (viaje.cliente_id, viaje.placa, fecha_actual, fecha_actual, viaje.precio_kg_venta, viaje.numero_guia)
             )
             conn.commit()
             nuevo_id = cursor.lastrowid
@@ -1846,5 +1871,184 @@ def listar_historial_cobros(id: int):
 def listar_cuentas_pagar():
     with get_db() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT p.id as proveedor_id, p.nombre as proveedor_nombre, SUM(CASE WHEN n.estado_pago = 'PENDIENTE' THEN n.total_monetario ELSE 0 END) as total_deuda, COUNT(CASE WHEN n.estado_pago = 'PENDIENTE' THEN n.id END) as notas_pendientes FROM proveedor p LEFT JOIN notaproveedor n ON p.id = n.proveedor_id GROUP BY p.id HAVING total_deuda > 0")
+        cursor.execute("""
+            SELECT cp.*, p.nombre as proveedor_nombre, n.folio as nota_folio
+            FROM cuenta_pagar cp
+            JOIN proveedor p ON cp.proveedor_id = p.id
+            LEFT JOIN notaproveedor n ON cp.notaproveedor_id = n.id
+            ORDER BY cp.fecha_emision DESC
+        """)
+        return [dict(row) for row in cursor.fetchall()]
+
+@app.post("/api/finanzas/pagar/{id}/abono")
+def registrar_abono_proveedor(id: int, abono: AbonoProveedorCreate):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        try:
+            cursor.execute("SELECT saldo_pendiente, notaproveedor_id FROM cuenta_pagar WHERE id = ?", (id,))
+            cuenta = cursor.fetchone()
+            if not cuenta:
+                raise HTTPException(status_code=404, detail="Cuenta por pagar no encontrada")
+            
+            saldo = float(cuenta['saldo_pendiente'])
+            if abono.monto_pagado <= 0 or abono.monto_pagado > saldo:
+                raise HTTPException(status_code=400, detail="Monto de abono inválido")
+                
+            cursor.execute("""
+                INSERT INTO abono_proveedor (cuenta_pagar_id, monto_pagado, metodo_pago, referencia)
+                VALUES (?, ?, ?, ?)
+            """, (id, abono.monto_pagado, abono.metodo_pago, abono.referencia))
+            
+            nuevo_saldo = saldo - abono.monto_pagado
+            nuevo_estado = 'PAGADO' if nuevo_saldo <= 0 else 'PENDIENTE'
+            
+            cursor.execute("""
+                UPDATE cuenta_pagar
+                SET saldo_pendiente = ?, estado = ?
+                WHERE id = ?
+            """, (nuevo_saldo, nuevo_estado, id))
+            
+            # Si se liquida la cuenta, también marcar la notaproveedor como PAGADA
+            if nuevo_estado == 'PAGADO' and cuenta['notaproveedor_id']:
+                cursor.execute("""
+                    UPDATE notaproveedor
+                    SET estado_pago = 'PAGADO'
+                    WHERE id = ?
+                """, (cuenta['notaproveedor_id'],))
+                
+            conn.commit()
+            return {"mensaje": "Abono registrado exitosamente", "saldo_pendiente": nuevo_saldo}
+        except HTTPException as he:
+            raise he
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Error registrando abono a proveedor: {e}")
+            raise HTTPException(status_code=500, detail="Error interno")
+
+@app.get("/api/finanzas/pagar/{id}/historial")
+def listar_historial_abonos(id: int):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM abono_proveedor WHERE cuenta_pagar_id = ? ORDER BY fecha_pago DESC", (id,))
+        return [dict(row) for row in cursor.fetchall()]
+
+@app.put("/api/viajes-salida/{id}/datos-factura")
+def ingresar_datos_factura(id: int, data: dict):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        try:
+            # Obtener datos del viaje y el peso enviado (neto total de viaje_salida_tarima)
+            cursor.execute("SELECT v.*, SUM(vst.peso_salida) as peso_enviado_neto FROM viaje v LEFT JOIN viaje_salida_tarima vst ON v.id = vst.viaje_id WHERE v.id = ?", (id,))
+            viaje = cursor.fetchone()
+            if not viaje or not viaje['id']:
+                raise HTTPException(status_code=404, detail="Viaje no encontrado")
+            
+            peso_cliente = float(data.get('peso_cliente', 0.0))
+            peso_enviado = float(viaje['peso_enviado_neto'] or 0.0)
+            merma_salida = peso_enviado - peso_cliente
+            
+            fecha_facturacion = data.get('fecha_facturacion')
+            numero_factura = data.get('numero_factura')
+            fecha_vencimiento = data.get('fecha_vencimiento')
+            
+            cursor.execute("""
+                UPDATE viaje
+                SET peso_cliente = ?, fecha_facturacion = ?, numero_factura = ?, fecha_vencimiento = ?, merma_salida = ?, estado = 'CONCILIADO'
+                WHERE id = ?
+            """, (peso_cliente, fecha_facturacion, numero_factura, fecha_vencimiento, merma_salida, id))
+            
+            precio = float(viaje['precio_kg_venta'] or 0.0)
+            monto_facturado = peso_cliente * precio
+            
+            # Buscar si ya existe la cuenta por cobrar
+            cursor.execute("SELECT id, saldo_pendiente, monto_total FROM cuenta_cobrar WHERE viaje_salida_id = ?", (id,))
+            cuenta = cursor.fetchone()
+            if cuenta:
+                diff_monto = monto_facturado - cuenta['monto_total']
+                cursor.execute("""
+                    UPDATE cuenta_cobrar
+                    SET monto_total = ?, saldo_pendiente = saldo_pendiente + ?, estado = CASE WHEN (saldo_pendiente + ?) <= 0 THEN 'PAGADO' ELSE 'PENDIENTE' END
+                    WHERE id = ?
+                """, (monto_facturado, diff_monto, diff_monto, cuenta['id']))
+            else:
+                cursor.execute("""
+                    INSERT INTO cuenta_cobrar (cliente_id, viaje_salida_id, monto_total, saldo_pendiente, estado)
+                    VALUES (?, ?, ?, ?, 'PENDIENTE')
+                """, (viaje['cliente_id'], id, monto_facturado, monto_facturado))
+                
+            conn.commit()
+            return {"status": "ok", "merma_salida": merma_salida, "monto_facturado": monto_facturado}
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Error ingresando datos factura: {e}")
+            raise HTTPException(status_code=500, detail="Error interno")
+
+@app.get("/api/maquilas/cerradas")
+def listar_maquilas_cerradas():
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT v.*, c.nombre as cliente_nombre
+            FROM viaje v
+            JOIN cliente c ON v.cliente_id = c.id
+            LEFT JOIN cuenta_cobrar cc ON v.id = cc.maquila_id
+            WHERE v.tipo_operacion = 'MAQUILA' AND v.estado = 'CERRADO' AND cc.id IS NULL
+            ORDER BY v.fecha_entrada DESC
+        """)
+        return [dict(row) for row in cursor.fetchall()]
+
+@app.post("/api/maquilas/{id}/generar-cobro")
+def generar_cobro_maquila(id: int, data: dict):
+    costo = float(data.get('costo', 0.0))
+    if costo <= 0:
+        raise HTTPException(status_code=400, detail="El costo debe ser mayor a 0")
+    with get_db() as conn:
+        cursor = conn.cursor()
+        try:
+            cursor.execute("SELECT * FROM viaje WHERE id = ? AND tipo_operacion = 'MAQUILA'", (id,))
+            viaje = cursor.fetchone()
+            if not viaje:
+                raise HTTPException(status_code=404, detail="Viaje de maquila no encontrado")
+            cursor.execute("UPDATE viaje SET estado = 'CONCILIADO' WHERE id = ?", (id,))
+            cursor.execute("""
+                INSERT INTO cuenta_cobrar (cliente_id, maquila_id, monto_total, saldo_pendiente, estado)
+                VALUES (?, ?, ?, ?, 'PENDIENTE')
+            """, (viaje['cliente_id'], id, costo, costo))
+            conn.commit()
+            return {"status": "ok"}
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Error cobro maquila: {e}")
+            raise HTTPException(status_code=500, detail="Error interno")
+
+@app.post("/api/inventario-frio/{id}/descartar")
+def descartar_tarima_piso(id: int):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        try:
+            # Desactivar del inventario
+            cursor.execute("UPDATE inventario_frio SET activo = 0, fecha_salida = CURRENT_TIMESTAMP, notas_referencia = 'DESCARTADO_PISO' WHERE id = ?", (id,))
+            # Eliminar del cuarto frío
+            cursor.execute("DELETE FROM cuartofrio WHERE inventario_frio_id = ?", (id,))
+            conn.commit()
+            return {"status": "ok", "mensaje": "Tarima de piso descartada"}
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Error descartando tarima {id}: {e}")
+            raise HTTPException(status_code=500, detail="Error interno")
+
+@app.get("/api/reportes/mermas-tarimas")
+def reporte_mermas_tarimas():
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT i.id, i.numero_tarima_display, i.peso_neto as peso_entrada, i.peso_salida, 
+                   (i.peso_neto - i.peso_salida) as merma,
+                   CASE WHEN i.peso_neto > 0 THEN ((i.peso_neto - i.peso_salida) / i.peso_neto) * 100.0 ELSE 0.0 END as porc_merma,
+                   i.fecha_ingreso, i.fecha_salida, tf.nombre as tipo_fruta_nombre
+            FROM inventario_frio i
+            JOIN tipofruta tf ON i.tipo_fruta_id = tf.id
+            WHERE i.activo = 0 AND i.peso_salida IS NOT NULL AND i.peso_salida > 0
+            ORDER BY i.fecha_salida DESC
+        """)
         return [dict(row) for row in cursor.fetchall()]

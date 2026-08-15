@@ -258,6 +258,58 @@ def create_db_and_tables():
         FOREIGN KEY(cuenta_cobrar_id) REFERENCES cuenta_cobrar(id)
     )""")
 
+    # 15. Cuentas por Pagar (Proveedores)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS cuenta_pagar (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        proveedor_id INTEGER NOT NULL,
+        notaproveedor_id INTEGER,
+        fecha_emision DATETIME DEFAULT CURRENT_TIMESTAMP,
+        monto_total REAL NOT NULL DEFAULT 0.0,
+        saldo_pendiente REAL NOT NULL DEFAULT 0.0,
+        estado TEXT DEFAULT 'PENDIENTE',
+        FOREIGN KEY(proveedor_id) REFERENCES proveedor(id),
+        FOREIGN KEY(notaproveedor_id) REFERENCES notaproveedor(id)
+    )""")
+
+    # 16. Abonos a Proveedores
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS abono_proveedor (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        cuenta_pagar_id INTEGER NOT NULL,
+        monto_pagado REAL NOT NULL,
+        fecha_pago DATETIME DEFAULT CURRENT_TIMESTAMP,
+        metodo_pago TEXT,
+        referencia TEXT,
+        FOREIGN KEY(cuenta_pagar_id) REFERENCES cuenta_pagar(id)
+    )""")
+
+    # Alteraciones adicionales en tabla viaje para detalles de facturacion / merma cliente
+    try:
+        cursor.execute("ALTER TABLE viaje ADD COLUMN numero_guia TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("ALTER TABLE viaje ADD COLUMN peso_cliente REAL")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("ALTER TABLE viaje ADD COLUMN fecha_facturacion DATETIME")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("ALTER TABLE viaje ADD COLUMN numero_factura TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("ALTER TABLE viaje ADD COLUMN fecha_vencimiento DATETIME")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("ALTER TABLE viaje ADD COLUMN merma_salida REAL")
+    except sqlite3.OperationalError:
+        pass
+
     # ================= ÍNDICES PARA OPTIMIZACIÓN =================
     # Índices para consultas frecuentes
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_viaje_estado ON viaje(estado)")
@@ -279,6 +331,20 @@ def create_db_and_tables():
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_cuenta_cobrar_cliente ON cuenta_cobrar(cliente_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_cuenta_cobrar_estado ON cuenta_cobrar(estado)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_cobro_cliente_cuenta ON cobro_cliente(cuenta_cobrar_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_cuenta_pagar_proveedor ON cuenta_pagar(proveedor_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_cuenta_pagar_estado ON cuenta_pagar(estado)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_abono_proveedor_cuenta ON abono_proveedor(cuenta_pagar_id)")
+
+    # Sincronizar cuenta_pagar para notaproveedor antiguas que no la tengan
+    cursor.execute("""
+        INSERT INTO cuenta_pagar (proveedor_id, notaproveedor_id, fecha_emision, monto_total, saldo_pendiente, estado)
+        SELECT n.proveedor_id, n.id, n.fecha, n.total_monetario, 
+               CASE WHEN n.estado_pago = 'PAGADO' THEN 0.0 ELSE n.total_monetario END,
+               CASE WHEN n.estado_pago = 'PAGADO' THEN 'PAGADO' ELSE 'PENDIENTE' END
+        FROM notaproveedor n
+        LEFT JOIN cuenta_pagar cp ON n.id = cp.notaproveedor_id
+        WHERE cp.id IS NULL
+    """)
 
     conn.commit()
     conn.close()

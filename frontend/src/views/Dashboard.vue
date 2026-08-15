@@ -32,13 +32,16 @@ const registrosSalida = ref([])
 const pagos = ref([])
 const inventarioFrio = ref([])
 const ubicacionesFrio = ref([])
-const cuentasPorCobrar = ref([])
 const cobrosTotales = ref([])
+const cuentasPorCobrar = ref([])
+const mermasTarimas = ref([])
 
 // Filtros
 const fechaInicio = ref(new Date(new Date().setDate(new Date().getDate() - 30)).toISOString().split('T')[0])
 const fechaFin = ref(new Date().toISOString().split('T')[0])
 const periodoSeleccionado = ref('mes') // semana, mes, trimestre, año
+const modoVista = ref('periodo') // 'periodo' o 'dia'
+const fechaDiaEspecifico = ref(new Date().toISOString().split('T')[0])
 
 // Polling
 const { data: catalogsData, loading, start: startPolling } = useCatalogsPolling(fetchCatalogos, {
@@ -65,7 +68,8 @@ async function fetchCatalogos() {
       get(`${API_URL}/inventario-frio`),
       get(`${API_URL}/cuarto-frio`),
       get(`${API_URL}/finanzas/cobrar`),
-      get(`${API_URL}/finanzas/cobros`)
+      get(`${API_URL}/finanzas/cobros`),
+      get(`${API_URL}/reportes/mermas-tarimas`)
     ]
     
     const results = await Promise.allSettled(promises)
@@ -86,6 +90,7 @@ async function fetchCatalogos() {
     ubicacionesFrio.value = getValue(10)
     cuentasPorCobrar.value = getValue(11)
     cobrosTotales.value = getValue(12)
+    mermasTarimas.value = results[13]?.status === 'fulfilled' ? results[13].value : []
     
     // Log failures
     results.forEach((r, i) => {
@@ -415,14 +420,24 @@ const viajesPorEstado = computed(() => {
 // Cambiar periodo
 const cambiarPeriodo = (periodo) => {
   periodoSeleccionado.value = periodo
+  modoVista.value = 'periodo'
   
   const hoy = new Date()
   let inicio
   
   switch (periodo) {
     case 'semana':
-      inicio = new Date(hoy.setDate(hoy.getDate() - 7))
-      break
+      const diaSemana = hoy.getDay() // 0 = Domingo, 1 = Lunes, etc.
+      const diffLunes = diaSemana === 0 ? -6 : 1 - diaSemana
+      const lunes = new Date(hoy)
+      lunes.setDate(hoy.getDate() + diffLunes)
+      
+      const sabado = new Date(lunes)
+      sabado.setDate(lunes.getDate() + 5)
+      
+      fechaInicio.value = lunes.toISOString().split('T')[0]
+      fechaFin.value = sabado.toISOString().split('T')[0]
+      return
     case 'mes':
       inicio = new Date(hoy.setDate(hoy.getDate() - 30))
       break
@@ -436,6 +451,12 @@ const cambiarPeriodo = (periodo) => {
   
   fechaInicio.value = inicio.toISOString().split('T')[0]
   fechaFin.value = new Date().toISOString().split('T')[0]
+}
+
+const aplicarDiaEspecifico = () => {
+  modoVista.value = 'dia'
+  fechaInicio.value = fechaDiaEspecifico.value
+  fechaFin.value = fechaDiaEspecifico.value
 }
 
 // Formatear fecha
@@ -486,16 +507,36 @@ const formatearPeso = (valor) => {
       </div>
       
       <!-- Selector de periodo -->
-      <div class="flex gap-2">
-        <button 
-          v-for="periodo in ['semana', 'mes', 'trimestre', 'año']"
-          :key="periodo"
-          @click="cambiarPeriodo(periodo)"
-          :class="periodoSeleccionado === periodo ? 'bg-emerald-500 text-white' : 'bg-white text-gray-600'"
-          class="px-4 py-2 rounded-xl text-sm font-medium shadow-sm border transition"
-        >
-          {{ periodo.charAt(0).toUpperCase() + periodo.slice(1) }}
-        </button>
+      <div class="flex gap-3 flex-wrap items-center">
+        <div class="flex gap-2">
+          <button 
+            v-for="periodo in ['semana', 'mes', 'trimestre', 'año']"
+            :key="periodo"
+            @click="cambiarPeriodo(periodo)"
+            :class="modoVista === 'periodo' && periodoSeleccionado === periodo ? 'bg-emerald-500 text-white' : 'bg-white text-gray-600'"
+            class="px-4 py-2 rounded-xl text-sm font-medium shadow-sm border transition"
+          >
+            {{ periodo.charAt(0).toUpperCase() + periodo.slice(1) }}
+          </button>
+        </div>
+        
+        <div class="flex gap-2 items-center">
+          <button 
+            @click="aplicarDiaEspecifico"
+            :class="modoVista === 'dia' ? 'bg-emerald-500 text-white' : 'bg-white text-gray-600'"
+            class="px-4 py-2 rounded-xl text-sm font-medium shadow-sm border transition"
+          >
+            📅 Día Específico
+          </button>
+          
+          <input 
+            v-if="modoVista === 'dia'"
+            type="date"
+            v-model="fechaDiaEspecifico"
+            @change="aplicarDiaEspecifico"
+            class="border rounded-xl px-4 py-2 text-sm font-bold text-gray-700 outline-none focus:ring-2 focus:ring-emerald-500 shadow-sm"
+          />
+        </div>
       </div>
     </div>
 
@@ -725,7 +766,7 @@ const formatearPeso = (valor) => {
     </div>
 
     <!-- Estados de viajes -->
-    <div class="bg-white p-6 rounded-2xl shadow-sm border">
+    <div class="bg-white p-6 rounded-2xl shadow-sm border mb-8">
       <h3 class="text-lg font-bold text-gray-800 mb-4">Viajes por Estado</h3>
       <div class="grid grid-cols-3 gap-4">
         <div class="p-4 bg-blue-50 rounded-xl text-center">
@@ -740,6 +781,46 @@ const formatearPeso = (valor) => {
           <div class="text-3xl font-black text-emerald-600">{{ viajesPorEstado.CONCILIADO }}</div>
           <div class="text-sm text-emerald-800 font-medium">Conciliados</div>
         </div>
+      </div>
+    </div>
+
+    <!-- Reporte de Mermas de Aguacate (Trazabilidad Entrada vs Salida) -->
+    <div class="bg-white p-8 rounded-3xl border shadow-sm mb-8">
+      <h2 class="text-xl font-black text-gray-800 mb-2 flex items-center">
+        📉 Reporte de Mermas de Aguacates (Trazabilidad de Tarimas)
+      </h2>
+      <p class="text-gray-500 text-sm mb-6">Comparativa del peso de báscula de entrada vs el peso de báscula al salir de la cámara fría.</p>
+
+      <div class="overflow-x-auto border rounded-2xl">
+        <table class="min-w-full text-left text-sm text-gray-600">
+          <thead class="bg-red-50 text-red-800 border-b">
+            <tr>
+              <th class="p-3">Tarima</th>
+              <th class="p-3">Tipo Fruta</th>
+              <th class="p-3">Ingreso</th>
+              <th class="p-3 text-right">Peso Entrada (kg)</th>
+              <th class="p-3">Salida</th>
+              <th class="p-3 text-right">Peso Salida (kg)</th>
+              <th class="p-3 text-right">Merma (kg)</th>
+              <th class="p-3 text-right">% Merma</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="t in mermasTarimas" :key="t.id" class="border-b hover:bg-gray-50/50">
+              <td class="p-3 font-bold text-gray-800">{{ t.numero_tarima_display }}</td>
+              <td class="p-3">{{ t.tipo_fruta_nombre }}</td>
+              <td class="p-3 text-xs">{{ t.fecha_ingreso?.substring(0, 16).replace('T', ' ') }}</td>
+              <td class="p-3 text-right font-semibold">{{ formatearPeso(t.peso_entrada) }}</td>
+              <td class="p-3 text-xs">{{ t.fecha_salida?.substring(0, 16).replace('T', ' ') }}</td>
+              <td class="p-3 text-right font-semibold text-orange-600">{{ formatearPeso(t.peso_salida) }}</td>
+              <td class="p-3 text-right font-bold text-red-600">{{ formatearPeso(t.merma) }} kg</td>
+              <td class="p-3 text-right font-black text-red-600">{{ t.porc_merma?.toFixed(2) }}%</td>
+            </tr>
+            <tr v-if="mermasTarimas.length === 0">
+              <td colspan="8" class="p-8 text-center text-gray-400">No hay registros de tarimas enviadas para calcular merma.</td>
+            </tr>
+          </tbody>
+        </table>
       </div>
     </div>
   </div>

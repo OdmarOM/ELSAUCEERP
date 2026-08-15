@@ -9,11 +9,15 @@ echo.
 
 echo [1] Instalando Backend (Python)...
 cd backend
-if not exist venv (
-    echo Creando entorno virtual...
-    python -m venv venv
+if exist venv (
+    echo [AVISO] Eliminando entorno virtual venv existente...
+    rmdir /s /q venv
 )
+echo Creando entorno virtual nuevo...
+python -m venv venv
 call venv\Scripts\activate
+echo Actualizando pip e instalando dependencias...
+python -m pip install --upgrade pip
 pip install -r requirements.txt
 cd ..
 

@@ -952,6 +952,29 @@ const crearTarimaManual = async () => {
   }
 }
 
+const descartarTarimaPiso = async (id) => {
+  if (!confirm("¿Estás seguro de que deseas descartar/eliminar esta tarima de piso del sistema? Esta acción no se puede deshacer.")) {
+    return
+  }
+  cargando.value = true
+  try {
+    const res = await fetch(`${API_URL}/inventario-frio/${id}/descartar`, {
+      method: 'POST'
+    })
+    if (res.ok) {
+      alert("Tarima descartada con éxito.")
+      await fetchCatalogos()
+    } else {
+      alert("Error al descartar tarima.")
+    }
+  } catch (e) {
+    console.error(e)
+    alert("Error al descartar tarima.")
+  } finally {
+    cargando.value = false
+  }
+}
+
 // Editar tarima en frío
 const abrirEdicionTarimaFrio = (tarima) => {
   tarimaEditando.value = {
@@ -1150,7 +1173,10 @@ const guardarEdicionViaje = async () => {
                <td class="p-3">{{ t.fruta_nombre }}</td>
                <td class="p-3 text-right font-bold text-orange-600">{{ formatearPeso(t.peso_neto) }} kg</td>
                <td class="p-3 text-center"><span :class="{'bg-amber-100 text-amber-700': t.origen === 'MANUAL', 'bg-indigo-100 text-indigo-700': t.origen === 'UNION', 'bg-blue-100 text-blue-700': t.origen === 'PESADA'}" class="px-2 py-0.5 rounded text-[10px] font-bold">{{ t.origen || 'PESADA' }}</span></td>
-               <td class="p-3 text-center"><button @click="abrirEdicionTarimaFrio(t)" class="text-blue-500 hover:scale-110 transition mr-2">✏️</button></td>
+                <td class="p-3 text-center flex justify-center gap-2">
+                  <button @click="abrirEdicionTarimaFrio(t)" class="text-blue-500 hover:scale-110 transition" title="Editar">✏️</button>
+                  <button @click="descartarTarimaPiso(t.id)" class="text-red-500 hover:scale-110 transition font-bold" title="Descartar de Piso">❌</button>
+                </td>
              </tr>
              <tr v-if="tarimasEnBodega.length === 0"><td colspan="6" class="p-8 text-center text-gray-400">No hay tarimas en bodega</td></tr>
            </tbody>

@@ -14,7 +14,17 @@ const tarimasDetalleSalida = ref([])
 const mostrarModalDetalleSalida = ref(false)
 const salidaSeleccionada = ref(null)
 
-const nuevoViajeSalida = ref({ cliente_id: '', placa: '', precio_kg_venta: 0.0 })
+// Variables para Maquilas y Datos Facturacion Salidas
+const maquilasCerradas = ref([])
+const mostrarModalCostoMaquila = ref(false)
+const maquilaSeleccionada = ref(null)
+const costoMaquila = ref(0.0)
+
+const mostrarModalFactura = ref(false)
+const viajeSalidaFacturando = ref(null)
+const datosFactura = ref({ peso_cliente: 0.0, numero_factura: '', fecha_facturacion: '', fecha_vencimiento: '' })
+
+const nuevoViajeSalida = ref({ cliente_id: '', placa: '', precio_kg_venta: 0.0, fecha_salida: '', numero_guia: '' })
 
 const crearViajeSalida = async () => {
   if (!nuevoViajeSalida.value.cliente_id || !nuevoViajeSalida.value.placa || nuevoViajeSalida.value.precio_kg_venta <= 0) {
@@ -30,7 +40,7 @@ const crearViajeSalida = async () => {
       body: JSON.stringify(nuevoViajeSalida.value)
     })
     if (res.ok) {
-      nuevoViajeSalida.value = { cliente_id: '', placa: '', precio_kg_venta: 0.0 }
+      nuevoViajeSalida.value = { cliente_id: '', placa: '', precio_kg_venta: 0.0, fecha_salida: '', numero_guia: '' }
       alert("Viaje planeado exitosamente. Ahora el operador de báscula podrá cargarlo.")
       await fetchCatalogos()
     }
@@ -177,18 +187,112 @@ watch(() => nuevoPago.value.nota_ids, (idsSeleccionados) => {
 
 const fetchCatalogos = async () => {
   try {
-    const [resAcop, resProv, resCli, resFruta, resViajes, resNotas, resRegistros, resPagos, resViajesSalida] = await Promise.all([
+    const [resAcop, resProv, resCli, resFruta, resViajes, resNotas, resRegistros, resPagos, resViajesSalida, resMaquilas] = await Promise.all([
       fetch(`${API_URL}/acopiadores`), fetch(`${API_URL}/proveedores`), fetch(`${API_URL}/clientes`), fetch(`${API_URL}/tipos-fruta`),
-      fetch(`${API_URL}/viajes`), fetch(`${API_URL}/notas`), fetch(`${API_URL}/registros-bascula`), fetch(`${API_URL}/pagos`), fetch(`${API_URL}/viajes-salida`)
+      fetch(`${API_URL}/viajes`), fetch(`${API_URL}/notas`), fetch(`${API_URL}/registros-bascula`), fetch(`${API_URL}/pagos`), fetch(`${API_URL}/viajes-salida`),
+      fetch(`${API_URL}/maquilas/cerradas`)
     ])
     acopiadores.value = await resAcop.json(); proveedores.value = await resProv.json(); clientes.value = await resCli.json();
     tiposFruta.value = await resFruta.json(); viajes.value = await resViajes.json(); notas.value = await resNotas.json();
     registrosBascula.value = await resRegistros.json(); pagos.value = await resPagos.json(); viajesSalida.value = await resViajesSalida.json();
+    maquilasCerradas.value = await resMaquilas.json();
   } catch (e) { console.error('Error auto-update:', e) }
+}
+
+// Métodos para facturación de salidas y cobros de maquilas
+const abrirFacturacion = (viaje) => {
+  viajeSalidaFacturando.value = viaje
+  // Estimar el peso a partir del total físico del viaje como base
+  datosFactura.value = {
+    peso_cliente: viaje.peso_total_fisico || 0,
+    numero_factura: '',
+    fecha_facturacion: new Date().toISOString().split('T')[0],
+    fecha_vencimiento: ''
+  }
+  mostrarModalFactura.value = true
+}
+
+const guardarFactura = async () => {
+  if (datosFactura.value.peso_cliente <= 0 || !datosFactura.value.numero_factura) {
+    alert("Por favor ingresa un peso de cliente válido y número de factura.")
+    return
+  }
+  cargando.value = true
+  try {
+    const res = await fetch(`${API_URL}/viajes-salida/${viajeSalidaFacturando.value.id}/datos-factura`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(datosFactura.value)
+    })
+    if (res.ok) {
+      mostrarModalFactura.value = false
+      alert("Facturación y merma registradas correctamente. Cuenta por cobrar enviada a finanzas.")
+      await fetchCatalogos()
+    } else {
+      alert("Error al registrar factura")
+    }
+  } catch (e) {
+    console.error(e)
+    alert("Error al registrar factura")
+  } finally {
+    cargando.value = false
+  }
+}
+
+const abrirCostoMaquila = (maquila) => {
+  maquilaSeleccionada.value = maquila
+  costoMaquila.value = 0.0
+  mostrarModalCostoMaquila.value = true
+}
+
+const guardarCostoMaquila = async () => {
+  if (costoMaquila.value <= 0) {
+    alert("Por favor ingresa un costo válido.")
+    return
+  }
+  cargando.value = true
+  try {
+    const res = await fetch(`${API_URL}/maquilas/${maquilaSeleccionada.value.id}/generar-cobro`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ costo: costoMaquila.value })
+    })
+    if (res.ok) {
+      mostrarModalCostoMaquila.value = false
+      alert("Costo registrado. Se ha enviado a cuentas por cobrar.")
+      await fetchCatalogos()
+    } else {
+      alert("Error al registrar costo")
+    }
+  } catch (e) {
+    console.error(e)
+    alert("Error al registrar costo")
+  } finally {
+    cargando.value = false
+  }
 }
 
 onMounted(() => { fetchCatalogos(); intervaloCarga = setInterval(fetchCatalogos, 5000) })
 onUnmounted(() => { if (intervaloCarga) clearInterval(intervaloCarga) })
+
+const fechaFiltroTarimas = ref(new Date().toISOString().split('T')[0])
+const fechaFiltroSalidas = ref(new Date().toISOString().split('T')[0])
+
+const registrosBasculaFiltrados = computed(() => {
+  return registrosBascula.value.filter(r => {
+    const v = viajes.value.find(viaje => viaje.id === r.viaje_id)
+    if (!v || !v.fecha_entrada) return false
+    return v.fecha_entrada.startsWith(fechaFiltroTarimas.value)
+  })
+})
+
+const viajesSalidaFiltrados = computed(() => {
+  return viajesSalida.value.filter(v => {
+    const fecha = v.fecha_salida || v.fecha_entrada
+    if (!fecha) return false
+    return fecha.startsWith(fechaFiltroSalidas.value)
+  })
+})
 
 const notasOrdenadas = computed(() => [...notas.value].sort((a, b) => b.id - a.id))
 const notasLibres = computed(() => notasOrdenadas.value.filter(n => n.viaje_id === null))
@@ -418,6 +522,7 @@ const guardarEdicionPesada = async () => {
       <button @click="pestanaActual = 'tarimas'" :class="{'bg-emerald-500 text-white': pestanaActual === 'tarimas', 'bg-white text-gray-600': pestanaActual !== 'tarimas'}" class="px-5 py-2.5 rounded-2xl text-sm transition shadow-sm border font-medium">📦 Gestión de Pesadas</button>
       <button @click="pestanaActual = 'conciliacion'; vistaConciliacion = 'historial'" :class="{'bg-emerald-500 text-white': pestanaActual === 'conciliacion', 'bg-white text-gray-600': pestanaActual !== 'conciliacion'}" class="px-5 py-2.5 rounded-2xl text-sm transition shadow-sm border font-medium">📊 Conciliación de Viajes</button>
       <button @click="pestanaActual = 'salidas'" :class="{'bg-emerald-500 text-white': pestanaActual === 'salidas', 'bg-white text-gray-600': pestanaActual !== 'salidas'}" class="px-5 py-2.5 rounded-2xl text-sm transition shadow-sm border font-medium">🚚 Planear Salida</button>
+      <button @click="pestanaActual = 'maquilas'" :class="{'bg-emerald-500 text-white': pestanaActual === 'maquilas', 'bg-white text-gray-600': pestanaActual !== 'maquilas'}" class="px-5 py-2.5 rounded-2xl text-sm transition shadow-sm border font-medium">🏭 Maquilas Cerradas</button>
       <button @click="pestanaActual = 'pagos'" :class="{'bg-emerald-500 text-white': pestanaActual === 'pagos', 'bg-white text-gray-600': pestanaActual !== 'pagos'}" class="px-5 py-2.5 rounded-2xl text-sm transition shadow-sm border font-medium">💰 Pagos</button>
       <button @click="pestanaActual = 'catalogos'" :class="{'bg-emerald-500 text-white': pestanaActual === 'catalogos', 'bg-white text-gray-600': pestanaActual !== 'catalogos'}" class="px-5 py-2.5 rounded-2xl text-sm transition shadow-sm border font-medium">📇 Catálogos Base</button>
     </div>
@@ -509,6 +614,12 @@ const guardarEdicionPesada = async () => {
     </div>
 
     <div v-if="pestanaActual === 'tarimas'" class="animate-fade-in space-y-6">
+      <div class="flex justify-between items-center bg-white p-6 rounded-3xl border shadow-sm">
+        <div class="flex items-center gap-3">
+          <label class="text-sm font-bold text-gray-500 uppercase ml-1">Filtrar por Fecha:</label>
+          <input type="date" v-model="fechaFiltroTarimas" class="border p-3 rounded-xl outline-none font-bold text-gray-700 shadow-sm" />
+        </div>
+      </div>
       <div class="bg-white p-8 rounded-3xl shadow-sm border overflow-x-auto">
         <h2 class="text-2xl font-light mb-6 text-gray-700">Historial de Pesadas (Tarimas)</h2>
         <table class="min-w-full text-left text-sm text-gray-600">
@@ -526,7 +637,7 @@ const guardarEdicionPesada = async () => {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="r in registrosBascula" :key="r.id" class="border-b hover:bg-gray-50">
+            <tr v-for="r in registrosBasculaFiltrados" :key="r.id" class="border-b hover:bg-gray-50">
               <td class="p-3 font-bold text-blue-600">
                 Viaje #{{ r.viaje_id }}
                 <span class="block text-[10px] text-gray-400 font-black uppercase" :class="obtenerTipoViaje(r.viaje_id) === 'MAQUILA' ? 'text-purple-500' : ''">
@@ -638,64 +749,129 @@ const guardarEdicionPesada = async () => {
       <!-- Formulario para planear nueva salida -->
       <div class="bg-white p-8 rounded-3xl border shadow-sm mb-8">
         <h3 class="text-lg font-bold text-gray-700 mb-4">Generar Nuevo Viaje de Salida</h3>
-        <div class="grid grid-cols-1 md:grid-cols-4 gap-6">
+        <div class="grid grid-cols-1 md:grid-cols-5 gap-4">
           <div>
             <label class="block text-sm text-gray-500 mb-1 font-bold">Cliente</label>
-            <select v-model="nuevoViajeSalida.cliente_id" class="w-full border border-gray-200 p-3.5 rounded-2xl text-sm outline-none font-bold text-gray-700">
+            <select v-model="nuevoViajeSalida.cliente_id" class="w-full border border-gray-200 p-3 rounded-2xl text-sm outline-none font-bold text-gray-700">
               <option value="" disabled>Selecciona...</option>
               <option v-for="c in clientes" :value="c.id" :key="c.id">{{ c.nombre }}</option>
             </select>
           </div>
           <div>
             <label class="block text-sm text-gray-500 mb-1 font-bold">Placa/Transporte</label>
-            <input v-model="nuevoViajeSalida.placa" placeholder="Ej. T-999" class="w-full border border-gray-200 p-3.5 rounded-2xl text-sm outline-none font-bold uppercase" />
+            <input v-model="nuevoViajeSalida.placa" placeholder="Ej. T-999" class="w-full border border-gray-200 p-3 rounded-2xl text-sm outline-none font-bold uppercase" />
           </div>
           <div>
             <label class="block text-sm text-gray-500 mb-1 font-bold">Precio Pactado ($/kg)</label>
-            <input type="number" step="0.5" v-model="nuevoViajeSalida.precio_kg_venta" class="w-full border border-gray-200 p-3.5 rounded-2xl text-sm outline-none font-bold text-blue-600" />
+            <input type="number" step="0.5" v-model="nuevoViajeSalida.precio_kg_venta" class="w-full border border-gray-200 p-3 rounded-2xl text-sm outline-none font-bold text-blue-600" />
           </div>
-          <div class="flex items-end">
-            <button @click="crearViajeSalida" :disabled="cargando" class="w-full bg-emerald-500 text-white p-3.5 rounded-2xl font-bold hover:bg-emerald-600 disabled:opacity-50">
-              Crear Viaje
-            </button>
+          <div>
+            <label class="block text-sm text-gray-500 mb-1 font-bold">Fecha de Salida</label>
+            <input type="date" v-model="nuevoViajeSalida.fecha_salida" class="w-full border border-gray-200 p-3 rounded-2xl text-sm outline-none font-bold text-gray-600" />
           </div>
+          <div>
+            <label class="block text-sm text-gray-500 mb-1 font-bold">Número de Guía</label>
+            <input v-model="nuevoViajeSalida.numero_guia" placeholder="Guía #" class="w-full border border-gray-200 p-3 rounded-2xl text-sm outline-none font-bold text-gray-600" />
+          </div>
+        </div>
+        <div class="flex justify-end mt-4">
+          <button @click="crearViajeSalida" :disabled="cargando" class="bg-emerald-500 text-white px-8 py-3 rounded-2xl font-bold hover:bg-emerald-600 disabled:opacity-50 shadow-sm">
+            Crear Viaje
+          </button>
         </div>
       </div>
 
       <div class="bg-white p-8 rounded-3xl border overflow-x-auto shadow-sm">
-        <h3 class="text-lg font-bold text-gray-700 mb-4">Viajes Planeados / Activos</h3>
+        <div class="flex justify-between items-center mb-4">
+          <h3 class="text-lg font-bold text-gray-700">Viajes Planeados / Activos</h3>
+          <div class="flex items-center gap-3">
+            <label class="text-sm font-bold text-gray-500 uppercase">Filtrar por Fecha:</label>
+            <input type="date" v-model="fechaFiltroSalidas" class="border p-2 rounded-xl outline-none font-bold text-gray-700 shadow-sm" />
+          </div>
+        </div>
         <table class="min-w-full text-left text-sm text-gray-600">
           <thead class="bg-gray-50 border-b">
             <tr>
               <th class="p-3">ID</th>
               <th class="p-3">Cliente</th>
               <th class="p-3">Placa</th>
-              <th class="p-3">Fecha Planeación</th>
+              <th class="p-3">Fecha de Salida</th>
+              <th class="p-3">Guía</th>
               <th class="p-3 text-right">Precio Pactado</th>
               <th class="p-3 text-center">Estado</th>
               <th class="p-3 text-center">Acción</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="viaje in viajesSalida" :key="viaje.id" class="border-b hover:bg-gray-50">
+            <tr v-for="viaje in viajesSalidaFiltrados" :key="viaje.id" class="border-b hover:bg-gray-50">
               <td class="p-3 font-bold">#{{ viaje.id }}</td>
-              <td class="p-3">{{ viaje.cliente_nombre }}</td>
+              <td class="p-3">
+                <div class="font-bold text-gray-800">{{ viaje.cliente_nombre }}</div>
+                <!-- Mostrar info de factura si está conciliado -->
+                <div v-if="viaje.estado === 'CONCILIADO'" class="text-xs text-gray-500 mt-1 bg-emerald-50 p-2 rounded-lg border border-emerald-100/50">
+                  📄 Fac: <strong>{{ viaje.numero_factura || 'S/N' }}</strong> | ⚖️ Peso Clie: <strong>{{ formatearPeso(viaje.peso_cliente) }} kg</strong><br/>
+                  📉 Merma: <span class="text-red-500 font-bold">{{ formatearPeso(viaje.merma_salida) }} kg</span>
+                </div>
+              </td>
               <td class="p-3 font-mono">{{ viaje.placa }}</td>
-              <td class="p-3">{{ formatearFecha(viaje.fecha_entrada) }}</td>
+              <td class="p-3">{{ formatearFecha(viaje.fecha_salida) }}</td>
+              <td class="p-3 font-medium text-gray-500">{{ viaje.numero_guia || 'N/A' }}</td>
               <td class="p-3 text-right font-bold text-blue-600">${{ viaje.precio_kg_venta || 0 }} / kg</td>
               <td class="p-3 text-center">
-                <span :class="viaje.estado === 'ACTIVO' ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-700'" class="px-2 py-1 rounded text-xs font-bold">
-                  {{ viaje.estado === 'ACTIVO' ? 'PENDIENTE DE CARGA' : viaje.estado }}
+                <span :class="viaje.estado === 'ACTIVO' ? 'bg-amber-100 text-amber-700' : (viaje.estado === 'CERRADO' ? 'bg-blue-100 text-blue-700' : 'bg-emerald-100 text-emerald-700')" class="px-2 py-1 rounded text-xs font-bold uppercase">
+                  {{ viaje.estado === 'ACTIVO' ? 'En Báscula (Carga)' : (viaje.estado === 'CERRADO' ? 'Cerrado (Pendiente Factura)' : viaje.estado) }}
                 </span>
               </td>
               <td class="p-3 text-center flex justify-center gap-2">
                 <button @click="verDetalleSalida(viaje)" class="bg-blue-50 text-blue-600 hover:bg-blue-100 font-bold px-3 py-1 rounded text-xs transition">Ver</button>
                 <button v-if="viaje.estado === 'ACTIVO'" @click="abrirEdicionSalida(viaje)" class="bg-amber-50 text-amber-600 hover:bg-amber-100 font-bold px-3 py-1 rounded text-xs transition">Editar</button>
+                <button v-if="viaje.estado === 'CERRADO'" @click="abrirFacturacion(viaje)" class="bg-emerald-50 text-emerald-600 hover:bg-emerald-100 font-bold px-3 py-1 rounded text-xs transition">Facturar</button>
                 <button v-if="viaje.estado === 'ACTIVO'" @click="eliminarSalida(viaje.id)" class="bg-red-50 text-red-600 hover:bg-red-100 font-bold px-3 py-1 rounded text-xs transition">Eliminar</button>
               </td>
             </tr>
             <tr v-if="viajesSalida.length === 0">
-              <td colspan="7" class="p-6 text-center text-gray-400">No hay viajes de salida planeados</td>
+              <td colspan="8" class="p-6 text-center text-gray-400">No hay viajes de salida planeados</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- PESTAÑA MAQUILAS CERRADAS -->
+    <div v-if="pestanaActual === 'maquilas'" class="space-y-6 animate-fade-in">
+      <h2 class="text-2xl font-light text-gray-700">🏭 Servicios de Maquila Cerrados (Pendientes de Cobro)</h2>
+      
+      <div class="bg-white p-8 rounded-3xl border overflow-x-auto shadow-sm">
+        <table class="min-w-full text-left text-sm text-gray-600">
+          <thead class="bg-gray-50 border-b">
+            <tr>
+              <th class="p-3">ID Viaje</th>
+              <th class="p-3">Cliente</th>
+              <th class="p-3">Placa</th>
+              <th class="p-3">Fecha Entrada</th>
+              <th class="p-3 text-center">Estado</th>
+              <th class="p-3 text-center">Acción</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="m in maquilasCerradas" :key="m.id" class="border-b hover:bg-gray-50">
+              <td class="p-3 font-bold">#{{ m.id }}</td>
+              <td class="p-3">{{ m.cliente_nombre }}</td>
+              <td class="p-3 font-mono">{{ m.placa }}</td>
+              <td class="p-3">{{ formatearFecha(m.fecha_entrada) }}</td>
+              <td class="p-3 text-center">
+                <span class="bg-amber-100 text-amber-700 px-2 py-1 rounded text-xs font-bold">
+                  {{ m.estado }}
+                </span>
+              </td>
+              <td class="p-3 text-center">
+                <button @click="abrirCostoMaquila(m)" class="bg-emerald-50 text-emerald-600 hover:bg-emerald-100 font-bold px-4 py-2 rounded-xl text-xs transition">
+                  Agregar Costo y Cobrar
+                </button>
+              </td>
+            </tr>
+            <tr v-if="maquilasCerradas.length === 0">
+              <td colspan="6" class="p-6 text-center text-gray-400">No hay viajes de maquila cerrados pendientes de costo.</td>
             </tr>
           </tbody>
         </table>
@@ -955,11 +1131,73 @@ const guardarEdicionPesada = async () => {
               <label class="block text-sm font-bold text-gray-700 mb-1">Precio Pactado ($/kg)</label>
               <input type="number" step="0.5" v-model="salidaEditando.precio_kg_venta" required class="w-full border border-gray-200 p-3 rounded-xl outline-none font-bold text-blue-600" />
             </div>
+            <div>
+              <label class="block text-sm font-bold text-gray-700 mb-1">Fecha de Salida</label>
+              <input type="date" v-model="salidaEditando.fecha_salida" required class="w-full border border-gray-200 p-3 rounded-xl outline-none font-bold" />
+            </div>
+            <div>
+              <label class="block text-sm font-bold text-gray-700 mb-1">Número de Guía</label>
+              <input v-model="salidaEditando.numero_guia" class="w-full border border-gray-200 p-3 rounded-xl outline-none font-bold" />
+            </div>
             <div class="flex gap-4 mt-6">
               <button type="button" @click="mostrarModalEdicionSalida = false" class="flex-1 bg-gray-100 text-gray-600 p-3 rounded-xl font-bold hover:bg-gray-200 transition">Cancelar</button>
               <button type="submit" :disabled="cargando" class="flex-1 bg-amber-500 text-white p-3 rounded-xl font-bold hover:bg-amber-600 transition disabled:opacity-50">Guardar</button>
             </div>
           </form>
+        </div>
+      </div>
+    </div>
+    <!-- Modal Registrar Costo de Maquila -->
+    <div v-if="mostrarModalCostoMaquila" class="fixed inset-0 bg-gray-900 bg-opacity-60 flex items-center justify-center z-50 p-4 backdrop-blur-sm">
+      <div class="bg-white rounded-3xl w-full max-w-sm p-6 shadow-2xl">
+        <h2 class="text-xl font-black text-gray-800 mb-4">Ingresar Costo de Maquila</h2>
+        <div class="bg-purple-50 text-purple-800 p-4 rounded-xl text-sm mb-4">
+          Viaje: <strong>#{{ maquilaSeleccionada?.id }}</strong><br/>
+          Cliente: <strong>{{ maquilaSeleccionada?.cliente_nombre }}</strong>
+        </div>
+        <div>
+          <label class="block text-xs font-bold text-gray-400 uppercase mb-2">Costo del Servicio ($)</label>
+          <input type="number" v-model="costoMaquila" class="w-full border p-3 rounded-xl font-bold text-lg outline-none focus:ring-2 focus:ring-purple-500" />
+        </div>
+        <div class="flex gap-3 mt-6">
+          <button @click="mostrarModalCostoMaquila = false" class="flex-1 bg-gray-100 text-gray-600 py-3 rounded-xl font-bold hover:bg-gray-200 transition">Cancelar</button>
+          <button @click="guardarCostoMaquila" :disabled="cargando" class="flex-1 bg-purple-600 text-white py-3 rounded-xl font-bold hover:bg-purple-700 shadow-md transition">Guardar y Cobrar</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal Registrar Factura (Salida) -->
+    <div v-if="mostrarModalFactura" class="fixed inset-0 bg-gray-900 bg-opacity-60 flex items-center justify-center z-50 p-4 backdrop-blur-sm">
+      <div class="bg-white rounded-3xl w-full max-w-md p-8 shadow-2xl">
+        <h2 class="text-2xl font-black text-gray-800 mb-4">Ingresar Datos de Facturación</h2>
+        <div class="bg-emerald-50 text-emerald-800 p-4 rounded-xl text-sm mb-6">
+          Viaje Salida: <strong>#{{ viajeSalidaFacturando?.id }}</strong> | Cliente: <strong>{{ viajeSalidaFacturando?.cliente_nombre }}</strong><br/>
+          Nuestro Peso Neto: <strong>{{ formatearPeso(viajeSalidaFacturando?.peso_total_fisico) }} kg</strong>
+        </div>
+        <div class="space-y-4">
+          <div>
+            <label class="block text-xs font-bold text-gray-500 uppercase mb-2">Peso Recibido por Cliente (kg)</label>
+            <input type="number" step="0.5" v-model="datosFactura.peso_cliente" class="w-full border p-3 rounded-xl font-bold outline-none focus:ring-2 focus:ring-emerald-500" />
+            <p class="text-xs text-gray-400 mt-1">Diferencia (Merma): <span class="font-bold text-red-500">{{ formatearPeso(viajeSalidaFacturando?.peso_total_fisico - datosFactura.peso_cliente) }} kg</span></p>
+          </div>
+          <div>
+            <label class="block text-xs font-bold text-gray-500 uppercase mb-2">Número de Factura</label>
+            <input type="text" v-model="datosFactura.numero_factura" placeholder="Ej. FAC-1029" class="w-full border p-3 rounded-xl font-bold outline-none uppercase focus:ring-2 focus:ring-emerald-500" />
+          </div>
+          <div class="grid grid-cols-2 gap-4">
+            <div>
+              <label class="block text-xs font-bold text-gray-500 uppercase mb-2">Fecha Facturación</label>
+              <input type="date" v-model="datosFactura.fecha_facturacion" class="w-full border p-3 rounded-xl text-sm font-medium outline-none" />
+            </div>
+            <div>
+              <label class="block text-xs font-bold text-gray-500 uppercase mb-2">Fecha Vencimiento</label>
+              <input type="date" v-model="datosFactura.fecha_vencimiento" class="w-full border p-3 rounded-xl text-sm font-medium outline-none" />
+            </div>
+          </div>
+        </div>
+        <div class="flex gap-4 mt-8">
+          <button @click="mostrarModalFactura = false" class="flex-1 bg-gray-100 text-gray-600 py-3.5 rounded-2xl font-bold hover:bg-gray-200 transition">Cancelar</button>
+          <button @click="guardarFactura" :disabled="cargando" class="flex-1 bg-emerald-600 text-white py-3.5 rounded-2xl font-bold hover:bg-emerald-500 shadow-md transition">Guardar Factura</button>
         </div>
       </div>
     </div>
