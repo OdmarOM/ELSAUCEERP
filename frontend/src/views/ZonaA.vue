@@ -6,6 +6,8 @@ const API_URL = '/api'
 
 const moduloActual = ref('bascula')
 const vistaActual = ref('lista')
+const vistaActualSalida = ref('lista')
+const tipoBasculla = ref('entrada') // 'entrada' o 'salida'
 const cargando = ref(false)
 
 // Datos de catálogos
@@ -17,10 +19,41 @@ const registros = ref([])
 const inventarioFrio = ref([])
 const ubicacionesFrio = ref([])
 
+// Datos de salidas
+const viajesSalida = ref([])
+const tarimasSalida = ref([])
+const viajeSalidaActivo = ref(null)
+const viajeSalidaSeleccionado = ref(null)
+const nuevoViajeSalida = ref({ cliente_id: '', placa: '' })
+const mostrarModalViajeSalida = ref(false)
+const mostrarModalDetalleSalida = ref(false)
+const salidaSeleccionada = ref(null)
+const tarimasDetalleSalida = ref([])
+
+// Formulario de pesada de salida
+const nuevaPesadaSalida = ref({ tipo_fruta_id: '', cantidad_cajas: 42, tara_caja: 1.7, cantidad_tarimas: 1, tara_tarima: 21.0, peso_bruto: '', promedio_peso_caja: 0.0 })
+const tarimaFrioSeleccionada = ref(null)
+const crearTarimaManualSalida = ref(false)
+
 // Estados de UI
 const viajeSeleccionado = ref(null)
 const mostrarModalViaje = ref(false)
-const fechaFiltroViajes = ref(new Date().toISOString().split('T')[0])
+
+// Edicion Salidas
+const mostrarModalEdicionPesadaSalida = ref(false)
+const pesadaEditandoSalida = ref(null)
+
+// Función para obtener fecha local en formato YYYY-MM-DD (evita problema de zona horaria)
+const getFechaLocal = () => {
+  const fecha = new Date()
+  const year = fecha.getFullYear()
+  const month = String(fecha.getMonth() + 1).padStart(2, '0')
+  const day = String(fecha.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+const fechaFiltroViajes = ref(getFechaLocal())
+const fechaFiltroSalidas = ref(getFechaLocal())
 const mostrarModalEditarTarima = ref(false)
 const tarimaEditando = ref({})
 
@@ -61,14 +94,19 @@ const conectarBascula = () => {
     basculaConectada.value = false
     return
   }
-  
+
   basculaConectada.value = true
   intervaloLectura = setInterval(async () => {
     try {
       const res = await fetch(`${API_URL}/bascula/peso-actual`)
       const data = await res.json()
-      if (data.peso !== undefined && viajeSeleccionado.value) {
-        nuevaPesada.value.peso_bruto = data.peso
+      if (data.peso !== undefined) {
+        // Actualizar según el módulo activo
+        if (tipoBasculla.value === 'entrada' && viajeSeleccionado.value) {
+          nuevaPesada.value.peso_bruto = data.peso
+        } else if (tipoBasculla.value === 'salida' && viajeSalidaSeleccionado.value) {
+          nuevaPesadaSalida.value.peso_bruto = data.peso
+        }
       }
     } catch (e) {
       console.error("Error leyendo báscula", e)
@@ -81,28 +119,38 @@ onUnmounted(() => {
 })
 
 // ================= LÓGICA DE CÁLCULO =================
-const taraTotalCalculada = computed(() => 
-  (parseFloat(nuevaPesada.value.cantidad_cajas || 0) * parseFloat(nuevaPesada.value.tara_caja || 0)) + 
+const taraTotalCalculada = computed(() =>
+  (parseFloat(nuevaPesada.value.cantidad_cajas || 0) * parseFloat(nuevaPesada.value.tara_caja || 0)) +
   (parseFloat(nuevaPesada.value.cantidad_tarimas || 0) * parseFloat(nuevaPesada.value.tara_tarima || 0))
 )
 
-const pesoNetoCalculado = computed(() => 
+const pesoNetoCalculado = computed(() =>
   Math.max(0, (parseFloat(nuevaPesada.value.peso_bruto || 0) - taraTotalCalculada.value)).toFixed(2)
+)
+
+const taraTotalCalculadaSalida = computed(() =>
+  (parseFloat(nuevaPesadaSalida.value.cantidad_cajas || 0) * parseFloat(nuevaPesadaSalida.value.tara_caja || 0)) +
+  (parseFloat(nuevaPesadaSalida.value.cantidad_tarimas || 0) * parseFloat(nuevaPesadaSalida.value.tara_tarima || 0))
+)
+
+const pesoNetoCalculadoSalida = computed(() =>
+  Math.max(0, (parseFloat(nuevaPesadaSalida.value.peso_bruto || 0) - taraTotalCalculadaSalida.value)).toFixed(2)
 )
 
 // ================= API CENTRALIZADA =================
 const fetchCatalogos = async () => {
   try {
-    const [resAcop, resCli, resFruta, resViajes, resRegistros, resInventario, resFrio] = await Promise.all([
-      fetch(`${API_URL}/acopiadores`), 
-      fetch(`${API_URL}/clientes`), 
-      fetch(`${API_URL}/tipos-fruta`), 
-      fetch(`${API_URL}/viajes`), 
-      fetch(`${API_URL}/registros-bascula`), 
+    const [resAcop, resCli, resFruta, resViajes, resRegistros, resInventario, resFrio, resViajesSalida] = await Promise.all([
+      fetch(`${API_URL}/acopiadores`),
+      fetch(`${API_URL}/clientes`),
+      fetch(`${API_URL}/tipos-fruta`),
+      fetch(`${API_URL}/viajes`),
+      fetch(`${API_URL}/registros-bascula`),
       fetch(`${API_URL}/inventario-frio`),
-      fetch(`${API_URL}/cuarto-frio`)
+      fetch(`${API_URL}/cuarto-frio`),
+      fetch(`${API_URL}/viajes-salida`)
     ])
-    
+
     acopiadores.value = await resAcop.json()
     clientes.value = await resCli.json()
     tiposFruta.value = await resFruta.json()
@@ -110,16 +158,263 @@ const fetchCatalogos = async () => {
     registros.value = await resRegistros.json()
     inventarioFrio.value = await resInventario.json()
     ubicacionesFrio.value = await resFrio.json()
-    
+    viajesSalida.value = await resViajesSalida.json()
+
+    // Actualizar viaje de salida activo
+    viajeSalidaActivo.value = viajesSalida.value.find(v => v.estado === 'ACTIVO') || null
+    if (viajeSalidaActivo.value) {
+      await cargarTarimasSalida(viajeSalidaActivo.value.id)
+    }
+
     if (viajeSeleccionado.value) {
       viajeSeleccionado.value = viajes.value.find(v => v.id === viajeSeleccionado.value.id) || null
     }
-  } catch (e) { 
-    console.error('Error al cargar catálogos:', e) 
+  } catch (e) {
+    console.error('Error al cargar catálogos:', e)
   }
 }
 
 onMounted(() => fetchCatalogos())
+
+// ================= FUNCIONES DE SALIDAS =================
+const formatearFecha = (fechaStr) => {
+  if (!fechaStr) return 'N/A'
+  const fechaSolo = fechaStr.split('T')[0]
+  const [year, month, day] = fechaSolo.split('-')
+  return `${day}/${month}/${year}`
+}
+
+const nombreCliente = (clienteId) => {
+  const cliente = clientes.value.find(c => c.id === clienteId)
+  return cliente ? cliente.nombre : 'Desconocido'
+}
+
+const cargarTarimasSalida = async (viajeId) => {
+  try {
+    const res = await fetch(`${API_URL}/viajes-salida/${viajeId}/tarimas`)
+    tarimasSalida.value = await res.json()
+  } catch (e) {
+    console.error('Error cargando tarimas de salida:', e)
+  }
+}
+
+const crearViajeSalida = async () => {
+  if (!nuevoViajeSalida.value.cliente_id || !nuevoViajeSalida.value.placa) {
+    alert('Por favor completa todos los campos')
+    return
+  }
+
+  cargando.value = true
+  try {
+    const res = await fetch(`${API_URL}/viajes-salida`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(nuevoViajeSalida.value)
+    })
+    if (res.ok) {
+      nuevoViajeSalida.value = { cliente_id: '', placa: '' }
+      mostrarModalViajeSalida.value = false
+      await fetchCatalogos()
+    }
+  } catch (e) {
+    console.error('Error creando viaje de salida:', e)
+    alert('Error al crear viaje de salida')
+  } finally {
+    cargando.value = false
+  }
+}
+
+const abrirModalViajeSalida = () => {
+  mostrarModalViajeSalida.value = true
+}
+
+const abrirDetalleSalida = (viaje) => {
+  viajeSalidaSeleccionado.value = viaje
+  vistaActualSalida.value = 'detalle'
+  cargarTarimasSalida(viaje.id)
+}
+
+const tarimasFrio = computed(() => {
+  const tarimasConUbicacion = inventarioFrio.value.filter(i => i.activo === 1)
+  const tarimasEnFrio = tarimasConUbicacion.filter(tarima =>
+    ubicacionesFrio.value.some(u => u.inventario_frio_id === tarima.id)
+  )
+
+  return tarimasEnFrio.map(tarima => {
+    const ubicacion = ubicacionesFrio.value.find(u => u.inventario_frio_id === tarima.id)
+    return {
+      ...tarima,
+      fruta_nombre: tiposFruta.value.find(f => f.id === tarima.tipo_fruta_id)?.nombre || 'N/A',
+      ubicacion: ubicacion ? `Columna ${ubicacion.fila_x}, Fila ${ubicacion.columna_y}` : 'Sin ubicación'
+    }
+  })
+})
+
+const pesoTotalSalida = computed(() => {
+  return tarimasSalida.value.reduce((sum, t) => sum + parseFloat(t.peso_salida || t.peso_neto || 0), 0)
+})
+
+const abrirEdicionPesadaSalida = (tarima) => {
+  pesadaEditandoSalida.value = { ...tarima }
+  mostrarModalEdicionPesadaSalida.value = true
+}
+
+const guardarEdicionPesadaSalida = async () => {
+  cargando.value = true
+  try {
+    const res = await fetch(`${API_URL}/registros-bascula-salida/${pesadaEditandoSalida.value.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(pesadaEditandoSalida.value)
+    })
+    if (res.ok) {
+      mostrarModalEdicionPesadaSalida.value = false
+      if (viajeSalidaActivo.value) {
+         await cargarTarimasSalida(viajeSalidaActivo.value.id)
+      }
+    } else {
+      const error = await res.json()
+      alert('Error: ' + error.detail)
+    }
+  } catch (e) {
+    console.error(e)
+  } finally {
+    cargando.value = false
+  }
+}
+
+const eliminarPesadaSalida = async (id) => {
+  if (!confirm('¿Estás seguro de eliminar esta tarima del viaje de salida?')) return
+  cargando.value = true
+  try {
+    const res = await fetch(`${API_URL}/registros-bascula-salida/${id}`, { method: 'DELETE' })
+    if (res.ok) {
+      if (viajeSalidaActivo.value) {
+         await cargarTarimasSalida(viajeSalidaActivo.value.id)
+      }
+      await fetchCatalogos()
+    } else {
+      const error = await res.json()
+      alert('Error: ' + error.detail)
+    }
+  } catch (e) {
+    console.error(e)
+  } finally {
+    cargando.value = false
+  }
+}
+
+const viajesSalidaDelDia = computed(() => {
+  return viajesSalida.value
+    .filter(v => v.fecha_salida && v.fecha_salida.startsWith(fechaFiltroSalidas.value))
+    .sort((a, b) => b.id - a.id)
+})
+
+const seleccionarTarimaSalida = (tarima) => {
+  tarimaFrioSeleccionada.value = tarima
+  // Pre-llenar datos de la tarima seleccionada
+  nuevaPesadaSalida.value.tipo_fruta_id = tarima.tipo_fruta_id
+  nuevaPesadaSalida.value.cantidad_cajas = tarima.cantidad_cajas
+  nuevaPesadaSalida.value.peso_bruto = tarima.peso_neto
+  crearTarimaManualSalida.value = false
+}
+
+const modalMapaFrioSalida = ref(false)
+
+const seleccionarDesdeMapaFrio = (celda) => {
+  if (celda && celda.ocupada) {
+    const tarima = tarimasFrio.value.find(t => t.id === celda.ocupada.inventario_id)
+    if (tarima) {
+      seleccionarTarimaSalida(tarima)
+      modalMapaFrioSalida.value = false
+    }
+  }
+}
+
+const limpiarSeleccionTarima = () => {
+  tarimaFrioSeleccionada.value = null
+  nuevaPesadaSalida.value = { tipo_fruta_id: '', cantidad_cajas: 42, tara_caja: 1.7, cantidad_tarimas: 1, tara_tarima: 21.0, peso_bruto: '', promedio_peso_caja: 0.0 }
+}
+
+const registrarPesadaSalida = async () => {
+  if (!nuevaPesadaSalida.value.peso_bruto) return alert("El peso bruto es obligatorio.")
+  if (!viajeSalidaSeleccionado.value) return alert("No hay viaje de salida seleccionado")
+
+  cargando.value = true
+  try {
+    const payload = {
+      ...nuevaPesadaSalida.value,
+      viaje_id: viajeSalidaSeleccionado.value.id,
+      numero_tarima: tarimasSalida.value.length + 1,
+      tara_total: taraTotalCalculadaSalida.value,
+      peso_neto: pesoNetoCalculadoSalida.value,
+      promedio_peso_caja: nuevaPesadaSalida.value.cantidad_cajas > 0
+        ? (pesoNetoCalculadoSalida.value / nuevaPesadaSalida.value.cantidad_cajas)
+        : 0
+    }
+
+    // Si hay tarima del frío seleccionada, agregar su ID
+    if (tarimaFrioSeleccionada.value) {
+      payload.inventario_frio_id = tarimaFrioSeleccionada.value.id
+      payload.observaciones = `Salida de tarima del frío: ${tarimaFrioSeleccionada.value.numero_tarima_display}`
+    } else {
+      payload.observaciones = 'Salida manual'
+    }
+
+    const res = await fetch(`${API_URL}/registros-bascula-salida`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    })
+
+    if (!res.ok) {
+      const err = await res.json()
+      alert(err.detail || "Error de validación al guardar la pesada de salida.")
+      return
+    }
+
+    nuevaPesadaSalida.value.peso_bruto = ''
+    limpiarSeleccionTarima()
+    await fetchCatalogos()
+  } finally {
+    cargando.value = false
+  }
+}
+
+const cerrarViajeSalida = async () => {
+  if (!confirm('¿Cerrar el viaje de salida? Esta acción no se puede deshacer.')) return
+
+  cargando.value = true
+  try {
+    const res = await fetch(`${API_URL}/viajes-salida/${viajeSalidaSeleccionado.value.id}/cerrar`, {
+      method: 'PUT'
+    })
+    if (res.ok) {
+      await fetchCatalogos()
+      vistaActualSalida.value = 'lista'
+      viajeSalidaSeleccionado.value = null
+    } else {
+      alert('Error al cerrar viaje de salida')
+    }
+  } catch (e) {
+    console.error('Error cerrando viaje de salida:', e)
+    alert('Error al cerrar viaje de salida')
+  } finally {
+    cargando.value = false
+  }
+}
+
+const verDetalleSalida = async (viaje) => {
+  salidaSeleccionada.value = viaje
+  mostrarModalDetalleSalida.value = true
+
+  try {
+    const res = await fetch(`${API_URL}/viajes-salida/${viaje.id}/tarimas`)
+    tarimasDetalleSalida.value = await res.json()
+  } catch (e) {
+    console.error('Error cargando detalle de salida:', e)
+  }
+}
 
 // ================= MÓDULO BÁSCULA =================
 const viajesDelDia = computed(() => {
@@ -787,12 +1082,12 @@ const guardarEdicionViaje = async () => {
     <!-- Cabecera -->
     <div class="flex justify-between items-center mb-6">
       <h1 class="text-3xl font-light text-gray-800 tracking-tight mt-1">Módulo Operativo</h1>
-      <span class="text-xs font-bold text-gray-400 bg-white px-4 py-2 border rounded-full shadow-sm">ZONA A</span>
+      <span class="text-xs font-bold text-gray-400 bg-white px-4 py-2 border rounded-full shadow-sm">BÁSCULA</span>
     </div>
 
     <!-- Selector de Módulo -->
     <div class="flex gap-4 mb-6 flex-wrap">
-      <button @click="moduloActual = 'bascula'" :class="moduloActual === 'bascula' ? 'bg-emerald-500 text-white' : 'bg-white text-gray-600'" class="px-6 py-3 rounded-2xl font-bold shadow-sm transition border">⚖️ Báscula de Recepción</button>
+      <button @click="moduloActual = 'bascula'" :class="moduloActual === 'bascula' ? 'bg-emerald-500 text-white' : 'bg-white text-gray-600'" class="px-6 py-3 rounded-2xl font-bold shadow-sm transition border">⚖️ Báscula</button>
       <button @click="moduloActual = 'frio'" :class="moduloActual === 'frio' ? 'bg-blue-500 text-white' : 'bg-white text-gray-600'" class="px-6 py-3 rounded-2xl font-bold shadow-sm transition border">❄️ Cuarto Frío y Bodega</button>
     </div>
 
@@ -865,8 +1160,16 @@ const guardarEdicionViaje = async () => {
 
     <!-- ================= MÓDULO BÁSCULA ================= -->
     <div v-if="moduloActual === 'bascula'">
-      <!-- LISTA DE VIAJES -->
-      <div v-if="vistaActual === 'lista'" class="space-y-6 animate-fade-in">
+      <!-- Tabs de Entrada/Salida -->
+      <div class="flex gap-4 mb-6">
+        <button @click="tipoBasculla = 'entrada'" :class="tipoBasculla === 'entrada' ? 'bg-emerald-500 text-white' : 'bg-white text-gray-600'" class="px-6 py-3 rounded-2xl font-bold shadow-sm transition border">📥 Entradas</button>
+        <button @click="tipoBasculla = 'salida'" :class="tipoBasculla === 'salida' ? 'bg-orange-500 text-white' : 'bg-white text-gray-600'" class="px-6 py-3 rounded-2xl font-bold shadow-sm transition border">📤 Salidas</button>
+      </div>
+
+      <!-- CONTENIDO DE ENTRADAS -->
+      <div v-if="tipoBasculla === 'entrada'">
+        <!-- LISTA DE VIAJES -->
+        <div v-if="vistaActual === 'lista'" class="space-y-6 animate-fade-in">
         <div class="flex flex-col md:flex-row justify-between items-center gap-4 bg-white p-6 rounded-3xl border shadow-sm">
           <div><h2 class="text-xl font-bold text-gray-800">Viajes Registrados</h2><p class="text-xs text-gray-400 uppercase font-black">Historial por Fecha</p></div>
           <div class="flex items-center gap-4"><input type="date" v-model="fechaFiltroViajes" class="border p-3 rounded-2xl outline-none font-bold text-gray-700" /><button @click="abrirModalViaje" class="bg-emerald-500 text-white px-5 py-3 rounded-2xl shadow-sm font-bold">+ Nuevo Viaje</button></div>
@@ -899,6 +1202,137 @@ const guardarEdicionViaje = async () => {
           <div class="p-5 border-b bg-gray-50"><h3 class="font-bold text-gray-700">Resumen de Pesadas ({{ registrosDelViaje.length }})</h3></div>
           <table class="min-w-full text-left text-sm"><thead class="bg-gray-50 text-gray-400 text-[10px] uppercase font-black"><tr><th class="p-4">Tarima</th><th class="p-4 text-center">Cajas</th><th class="p-4 text-right">Peso Neto</th><th class="p-4 text-center">Acciones</th></tr></thead><tbody><tr v-for="r in registrosDelViaje" :key="r.id" class="border-b hover:bg-gray-50"><td class="p-4 font-bold text-gray-700">#{{ r.numero_tarima }}</td><td class="p-4 text-center font-medium text-gray-600">{{ r.cantidad_cajas }}</td><td class="p-4 text-right font-black text-emerald-600">{{ formatearPeso(r.peso_neto) }} kg</td><td class="p-4 text-center"><template v-if="viajeSeleccionado.estado !== 'CONCILIADO'"><button @click="abrirEdicionPesada(r)" class="text-blue-500 hover:scale-110 transition mr-3">✏️</button><button @click="eliminarPesada(r.id)" class="text-red-500 hover:scale-110 transition">🗑️</button></template><span v-else class="text-xs text-gray-400 font-bold uppercase">Consolidado</span></td></tr><tr v-if="registrosDelViaje.length === 0"><td colspan="4" class="text-center p-8 text-gray-400 font-bold">No hay pesadas registradas para este viaje.</td></tr></tbody></table>
         </div>
+      </div>
+      </div>
+
+      <!-- CONTENIDO DE SALIDAS -->
+      <div v-if="tipoBasculla === 'salida'" class="space-y-6 animate-fade-in">
+        <!-- LISTA DE VIAJES DE SALIDA -->
+        <div v-if="vistaActualSalida === 'lista'" class="space-y-6 animate-fade-in">
+        <div class="flex flex-col md:flex-row justify-between items-center gap-4 bg-white p-6 rounded-3xl border shadow-sm">
+          <div><h2 class="text-xl font-bold text-gray-800">Viajes de Salida Planeados</h2><p class="text-xs text-gray-400 uppercase font-black">Historial por Fecha</p></div>
+          <div class="flex items-center gap-4"><input type="date" v-model="fechaFiltroSalidas" class="border p-3 rounded-2xl outline-none font-bold text-gray-700" /></div>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          <div v-for="v in viajesSalidaDelDia" :key="v.id" @click="abrirDetalleSalida(v)" class="bg-white p-6 rounded-3xl shadow-sm border cursor-pointer hover:shadow-md transition">
+            <div class="flex justify-between items-start mb-4"><span class="text-xs font-bold text-gray-400">ID #{{v.id}}</span><div class="flex gap-2"><span class="bg-orange-100 text-orange-700 px-3 py-0.5 rounded-full text-xs font-bold">SALIDA</span></div></div>
+            <h3 class="text-lg font-bold text-gray-800 mb-1">{{ v.cliente_nombre }}</h3>
+            <p class="text-gray-500 text-sm mb-4">Placa: <span class="font-mono text-gray-700">{{ v.placa }}</span></p>
+            <div class="flex justify-between items-center border-t pt-4 mt-4"><span :class="v.estado === 'ACTIVO' ? 'text-emerald-600' : 'text-gray-500'" class="text-xs font-black uppercase">{{ v.estado }}</span><span class="text-orange-500 text-sm font-bold">Ver Detalles →</span></div>
+          </div>
+          <div v-if="viajesSalidaDelDia.length === 0" class="col-span-full py-20 text-center text-gray-400 font-bold border-2 border-dashed rounded-3xl">No hay viajes de salida registrados en esta fecha.</div>
+        </div>
+      </div>
+
+      <!-- DETALLE DE VIAJE DE SALIDA -->
+      <div v-if="vistaActualSalida === 'detalle' && viajeSalidaSeleccionado" class="space-y-6 animate-fade-in">
+        <div class="flex flex-col md:flex-row justify-between bg-white p-6 rounded-3xl border gap-4">
+          <div><button @click="vistaActualSalida = 'lista'; viajeSalidaSeleccionado = null;" class="bg-gray-100 px-4 py-2 rounded-xl mb-3 text-sm font-medium">← Volver</button><div class="flex items-center gap-3"><h2 class="text-2xl font-light">Viaje de Salida <span class="font-medium font-mono">#{{ viajeSalidaSeleccionado.id }}</span></h2><span class="bg-orange-100 text-orange-700 px-3 py-1 rounded-md text-xs font-bold">SALIDA</span></div><p class="text-sm text-gray-500 mt-2 font-bold">{{ viajeSalidaSeleccionado.cliente_nombre }}</p></div>
+          <div class="flex gap-3 items-center"><button v-if="viajeSalidaSeleccionado.estado === 'ACTIVO'" @click="cerrarViajeSalida" class="bg-red-50 text-red-600 px-5 py-2.5 rounded-2xl font-bold hover:bg-red-100 transition">🔒 Finalizar</button></div>
+        </div>
+
+        <div v-if="viajeSalidaSeleccionado.estado === 'ACTIVO'" class="bg-white p-8 rounded-3xl border max-w-2xl mx-auto shadow-sm">
+          <!-- Selección de tarima del frío o manual -->
+          <div class="mb-6 p-4 bg-orange-50 rounded-2xl border border-orange-200">
+            <h3 class="font-bold text-orange-700 mb-3">📦 Origen de la Tarima</h3>
+            <div class="flex gap-4 mb-3">
+              <button @click="crearTarimaManualSalida = false" :class="!crearTarimaManualSalida ? 'bg-orange-500 text-white' : 'bg-white text-gray-600'" class="px-4 py-2 rounded-xl font-bold text-sm transition border">
+                ❄️ Del Cuarto Frío
+              </button>
+              <button @click="crearTarimaManualSalida = true; limpiarSeleccionTarima()" :class="crearTarimaManualSalida ? 'bg-orange-500 text-white' : 'bg-white text-gray-600'" class="px-4 py-2 rounded-xl font-bold text-sm transition border">
+                ✨ Crear Manual
+              </button>
+            </div>
+            <div v-if="!crearTarimaManualSalida && tarimaFrioSeleccionada" class="p-3 bg-white rounded-xl border">
+              <p class="text-sm font-bold text-gray-700">Tarima seleccionada: <span class="text-orange-600">{{ tarimaFrioSeleccionada.numero_tarima_display }}</span></p>
+              <button @click="limpiarSeleccionTarima" class="text-xs text-red-500 font-bold mt-1 hover:underline">Cambiar selección</button>
+            </div>
+            <div v-if="!crearTarimaManualSalida && !tarimaFrioSeleccionada" class="p-3 bg-white rounded-xl border">
+              <p class="text-sm text-gray-500">Selecciona una tarima del cuarto frío abajo</p>
+            </div>
+          </div>
+
+          <!-- Lista de tarimas del frío (solo si no es manual) -->
+          <div v-if="!crearTarimaManualSalida" class="mb-6">
+            <div class="flex justify-between items-center mb-4">
+              <h3 class="text-xl font-bold text-blue-700">❄️ Tarimas en Cuarto Frío</h3>
+              <button @click="modalMapaFrioSalida = true" class="bg-blue-100 text-blue-700 px-3 py-1.5 rounded-lg text-sm font-bold hover:bg-blue-200 transition border border-blue-200">🗺️ Seleccionar desde Mapa</button>
+            </div>
+            <div class="space-y-2 max-h-48 overflow-y-auto">
+              <div v-for="tarima in tarimasFrio" :key="tarima.id" @click="seleccionarTarimaSalida(tarima)" class="p-3 bg-gray-50 rounded-xl border hover:bg-blue-50 transition cursor-pointer" :class="tarimaFrioSeleccionada?.id === tarima.id ? 'bg-blue-100 border-blue-400' : ''">
+                <div class="flex justify-between items-center">
+                  <div>
+                    <p class="font-bold text-gray-800">{{ tarima.numero_tarima_display }}</p>
+                    <p class="text-sm text-gray-500">{{ tarima.fruta_nombre }}</p>
+                    <p class="text-xs text-gray-400">{{ tarima.cantidad_cajas }} cajas | {{ formatearPeso(tarima.peso_neto) }} kg</p>
+                    <p class="text-xs text-blue-500 font-medium">📍 {{ tarima.ubicacion }}</p>
+                  </div>
+                  <span v-if="tarimaFrioSeleccionada?.id === tarima.id" class="text-blue-500 font-bold">✓</span>
+                </div>
+              </div>
+              <p v-if="tarimasFrio.length === 0" class="text-center text-gray-400 py-4">No hay tarimas en el cuarto frío</p>
+            </div>
+          </div>
+
+          <!-- Formulario de pesada (igual a entrada) -->
+          <div class="bg-orange-50 border border-orange-200 rounded-3xl p-6 text-center mb-6">
+            <label class="block text-xs text-orange-500 font-bold uppercase mb-1">Peso Bruto (kg)</label>
+            <div class="flex flex-col md:flex-row items-center justify-center gap-4 mt-2">
+              <input type="number" step="0.5" v-model="nuevaPesadaSalida.peso_bruto" placeholder="0.00" class="bg-transparent text-center text-5xl font-black text-orange-600 outline-none font-mono w-64" />
+              <button @click="conectarBascula" :class="basculaConectada ? 'bg-red-500 text-white' : 'bg-orange-500 text-white'" class="px-4 py-3 rounded-xl text-sm font-bold transition shadow-sm">
+                {{ basculaConectada ? '🔴 Parar' : '🟢 Conectar' }}
+              </button>
+            </div>
+          </div>
+
+          <div class="space-y-5">
+            <div>
+              <label class="block text-xs font-bold text-gray-500 uppercase mb-1">Tipo de Fruta</label>
+              <select v-model="nuevaPesadaSalida.tipo_fruta_id" class="w-full bg-gray-50 border p-3.5 rounded-2xl outline-none font-bold">
+                <option value="" disabled>-- Seleccionar fruta --</option>
+                <option v-for="f in tiposFruta" :value="f.id" :key="f.id">{{ f.nombre }}</option>
+              </select>
+            </div>
+            <div class="grid grid-cols-2 gap-5 border-t pt-5">
+              <div>
+                <label class="block text-xs font-bold text-gray-500 uppercase mb-1">Cajas Físicas</label>
+                <input type="number" v-model="nuevaPesadaSalida.cantidad_cajas" class="w-full bg-gray-50 border p-3.5 rounded-2xl font-bold" />
+              </div>
+              <div>
+                <label class="block text-xs font-bold text-gray-500 uppercase mb-1">Tarimas</label>
+                <input type="number" v-model="nuevaPesadaSalida.cantidad_tarimas" class="w-full bg-gray-50 border p-3.5 rounded-2xl font-bold" />
+              </div>
+            </div>
+            <div class="grid grid-cols-2 gap-5 border-t pt-5">
+              <div>
+                <label class="block text-xs font-bold text-orange-500 uppercase mb-1">Tara Caja (kg)</label>
+                <input type="number" step="0.01" v-model="nuevaPesadaSalida.tara_caja" class="w-full bg-orange-50 border border-orange-100 p-3.5 rounded-2xl font-bold text-orange-700" />
+              </div>
+              <div>
+                <label class="block text-xs font-bold text-orange-500 uppercase mb-1">Tara Tarima (kg)</label>
+                <input type="number" step="0.1" v-model="nuevaPesadaSalida.tara_tarima" class="w-full bg-orange-50 border border-orange-100 p-3.5 rounded-2xl font-bold text-orange-700" />
+              </div>
+            </div>
+            <div class="bg-gray-100 p-4 rounded-2xl flex justify-between items-center mt-4">
+              <span class="text-xs font-bold text-gray-500 uppercase">Peso Neto a Guardar:</span>
+              <span class="text-xl font-black text-gray-800">{{ pesoNetoCalculadoSalida }} kg</span>
+            </div>
+          </div>
+          <div class="mt-8">
+            <button @click="registrarPesadaSalida" :disabled="!nuevaPesadaSalida.peso_bruto || cargando" class="w-full bg-orange-500 text-white py-4 rounded-2xl font-black text-lg shadow-md disabled:opacity-50 transition uppercase hover:bg-orange-600">
+              Confirmar y Guardar Pesada de Salida
+            </button>
+          </div>
+        </div>
+
+        <div class="bg-white rounded-3xl border overflow-hidden max-w-2xl mx-auto shadow-sm">
+          <div class="p-5 border-b bg-gray-50"><h3 class="font-bold text-gray-700">Tarimas en este Viaje ({{ tarimasSalida.length }})</h3></div>
+          <table class="min-w-full text-left text-sm"><thead class="bg-gray-50 text-gray-400 text-[10px] uppercase font-black"><tr><th class="p-4">Tarima</th><th class="p-4">Fruta</th><th class="p-4 text-right">Cajas</th><th class="p-4 text-right">Peso Salida</th><th class="p-4 text-center">Acciones</th></tr></thead><tbody><tr v-for="tarima in tarimasSalida" :key="tarima.id" class="border-b hover:bg-gray-50"><td class="p-4 font-bold text-gray-700">{{ tarima.numero_tarima_display }}</td><td class="p-4 text-gray-600">{{ tarima.fruta_nombre }}</td><td class="p-4 text-right font-medium text-gray-600">{{ tarima.cantidad_cajas }}</td><td class="p-4 text-right font-black text-orange-600">{{ formatearPeso(tarima.peso_salida || tarima.peso_neto) }} kg</td><td class="p-4 flex justify-center gap-2"><button @click="abrirEdicionPesadaSalida(tarima)" class="text-blue-500 hover:text-blue-700 bg-blue-50 px-2 py-1 rounded-md transition" title="Editar">✏️</button><button @click="eliminarPesadaSalida(tarima.id)" class="text-red-500 hover:text-red-700 bg-red-50 px-2 py-1 rounded-md transition" title="Eliminar">🗑️</button></td></tr><tr v-if="tarimasSalida.length === 0"><td colspan="5" class="text-center p-8 text-gray-400 font-bold">No hay tarimas agregadas a este viaje.</td></tr></tbody></table>
+          <div v-if="tarimasSalida.length > 0" class="p-4 bg-orange-50 border-t">
+            <p class="text-right font-bold text-gray-800">Total: {{ formatearPeso(pesoTotalSalida) }} kg</p>
+          </div>
+        </div>
+      </div>
       </div>
     </div>
 
@@ -984,9 +1418,64 @@ const guardarEdicionViaje = async () => {
       <div class="bg-white rounded-3xl w-full max-w-lg p-8 shadow-2xl"><h2 class="text-2xl font-bold mb-6 text-gray-800">Apertura de Viaje</h2><div class="space-y-5"><div><label class="block text-xs font-bold text-gray-400 uppercase mb-1">1. Tipo de Operación</label><select v-model="nuevoViaje.tipo_operacion" class="w-full border border-gray-300 p-4 rounded-2xl bg-gray-50 font-black"><option value="ACOPIO">ACOPIO (Compra)</option><option value="MAQUILA">MAQUILA (Servicio)</option></select></div><div v-if="nuevoViaje.tipo_operacion === 'ACOPIO'" class="space-y-5 border-t border-gray-100 pt-5"><div><label class="block text-xs font-bold text-gray-400 uppercase mb-1">Acopiador</label><select v-model="nuevoViaje.acopiador_id" class="w-full border border-gray-300 p-4 rounded-2xl outline-none font-bold"><option value="" disabled>-- Seleccionar --</option><option v-for="a in acopiadores" :value="a.id" :key="a.id">{{ a.nombre }}</option></select></div><div><label class="block text-xs font-bold text-gray-400 uppercase mb-1">Placa</label><input v-model="nuevoViaje.placa" placeholder="ABC-123" class="w-full border border-gray-300 p-4 rounded-2xl uppercase font-bold" /></div></div><div v-if="nuevoViaje.tipo_operacion === 'MAQUILA'" class="space-y-5 border-t border-gray-100 pt-5"><div><label class="block text-xs font-bold text-purple-500 uppercase mb-1">Cliente</label><select v-model="nuevoViaje.cliente_id" class="w-full border border-purple-200 p-4 rounded-2xl outline-none font-bold"><option value="" disabled>-- Seleccionar --</option><option v-for="c in clientes" :value="c.id" :key="c.id">{{ c.nombre }}</option></select></div></div></div><div class="mt-8 flex gap-4"><button @click="mostrarModalViaje = false" class="flex-1 bg-gray-100 py-4 rounded-2xl font-bold text-gray-600">Cancelar</button><button @click="registrarViaje" class="flex-1 bg-emerald-500 text-white py-4 rounded-2xl font-bold shadow-md">Abrir Viaje</button></div></div>
     </div>
 
+    <!-- Modal: Nuevo Viaje de Salida -->
+    <div v-if="mostrarModalViajeSalida" class="fixed inset-0 bg-gray-900 bg-opacity-50 flex items-center justify-center z-50 p-4">
+      <div class="bg-white rounded-3xl w-full max-w-lg p-8 shadow-2xl">
+        <h2 class="text-2xl font-bold mb-6 text-gray-800">Nuevo Viaje de Salida</h2>
+        <div class="space-y-5">
+          <div>
+            <label class="block text-xs font-bold text-orange-500 uppercase mb-1">Cliente</label>
+            <select v-model="nuevoViajeSalida.cliente_id" class="w-full border border-orange-200 p-4 rounded-2xl outline-none font-bold">
+              <option value="" disabled>-- Seleccionar --</option>
+              <option v-for="c in clientes" :value="c.id" :key="c.id">{{ c.nombre }}</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-xs font-bold text-gray-400 uppercase mb-1">Placa del Vehículo</label>
+            <input v-model="nuevoViajeSalida.placa" placeholder="ABC-123" class="w-full border border-gray-300 p-4 rounded-2xl uppercase font-bold" />
+          </div>
+        </div>
+        <div class="mt-8 flex gap-4">
+          <button @click="mostrarModalViajeSalida = false" class="flex-1 bg-gray-100 py-4 rounded-2xl font-bold text-gray-600">Cancelar</button>
+          <button @click="crearViajeSalida" :disabled="cargando" class="flex-1 bg-orange-500 text-white py-4 rounded-2xl font-bold shadow-md disabled:opacity-50">
+            {{ cargando ? 'Creando...' : 'Crear Viaje de Salida' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
     <!-- Modal: Editar Pesada -->
     <div v-if="mostrarModalEdicionPesada" class="fixed inset-0 bg-gray-900 bg-opacity-60 flex items-center justify-center z-[60] p-4 backdrop-blur-sm">
       <div class="bg-white rounded-3xl w-full max-w-md p-8 shadow-2xl"><h2 class="text-2xl font-bold mb-6 text-gray-800">Corregir Pesada #{{pesadaEditandoViaje.numero_tarima}}</h2><div class="space-y-4"><div><label class="text-xs font-bold text-gray-400">TIPO DE FRUTA</label><select v-model="pesadaEditandoViaje.tipo_fruta_id" class="w-full border p-3 rounded-xl"><option v-for="f in tiposFruta" :value="f.id" :key="f.id">{{f.nombre}}</option></select></div><div class="grid grid-cols-2 gap-4"><div><label class="text-xs font-bold text-gray-400">PESO BRUTO</label><input type="number" step="0.5" v-model="pesadaEditandoViaje.peso_bruto" class="w-full border p-3 rounded-xl font-bold"></div><div><label class="text-xs font-bold text-gray-400">CAJAS</label><input type="number" v-model="pesadaEditandoViaje.cantidad_cajas" class="w-full border p-3 rounded-xl font-bold"></div><div><label class="text-xs font-bold text-orange-400">TARA CAJA</label><input type="number" step="0.01" v-model="pesadaEditandoViaje.tara_caja" class="w-full border p-3 rounded-xl font-bold text-orange-600 bg-orange-50"></div><div><label class="text-xs font-bold text-orange-400">TARA TARIMA</label><input type="number" step="0.1" v-model="pesadaEditandoViaje.tara_tarima" class="w-full border p-3 rounded-xl font-bold text-orange-600 bg-orange-50"></div></div></div><div class="flex gap-4 mt-8"><button @click="mostrarModalEdicionPesada = false" class="flex-1 bg-gray-100 py-3 rounded-xl font-bold text-gray-600">Cancelar</button><button @click="guardarEdicionPesada" class="flex-1 bg-blue-500 text-white font-bold py-3 rounded-xl shadow-md">Guardar</button></div></div>
+    </div>
+
+    <!-- Modal: Editar Pesada Salida -->
+    <div v-if="mostrarModalEdicionPesadaSalida" class="fixed inset-0 bg-gray-900 bg-opacity-60 flex items-center justify-center z-[60] p-4 backdrop-blur-sm">
+      <div class="bg-white rounded-3xl w-full max-w-md p-8 shadow-2xl">
+        <h2 class="text-2xl font-bold mb-6 text-gray-800">Corregir Tarima de Salida</h2>
+        <div class="space-y-4">
+          <div>
+            <label class="text-xs font-bold text-gray-400">TIPO DE FRUTA</label>
+            <select v-model="pesadaEditandoSalida.tipo_fruta_id" class="w-full border p-3 rounded-xl font-bold">
+              <option v-for="f in tiposFruta" :value="f.id" :key="f.id">{{f.nombre}}</option>
+            </select>
+          </div>
+          <div class="grid grid-cols-2 gap-4">
+            <div>
+              <label class="text-xs font-bold text-gray-400">PESO NETO SALIDA (KG)</label>
+              <input type="number" step="0.1" v-model="pesadaEditandoSalida.peso_salida" class="w-full border p-3 rounded-xl font-bold text-orange-600 bg-orange-50">
+            </div>
+            <div>
+              <label class="text-xs font-bold text-gray-400">CAJAS</label>
+              <input type="number" v-model="pesadaEditandoSalida.cantidad_cajas" class="w-full border p-3 rounded-xl font-bold">
+            </div>
+          </div>
+        </div>
+        <div class="flex gap-4 mt-8">
+          <button @click="mostrarModalEdicionPesadaSalida = false" class="flex-1 bg-gray-100 py-3 rounded-xl font-bold text-gray-600">Cancelar</button>
+          <button @click="guardarEdicionPesadaSalida" class="flex-1 bg-orange-500 text-white font-bold py-3 rounded-xl shadow-md">Guardar</button>
+        </div>
+      </div>
     </div>
 
     <!-- Modal: Editar Viaje -->
@@ -999,7 +1488,7 @@ const guardarEdicionViaje = async () => {
 <div v-if="modalCrearTarimaManual" class="fixed inset-0 bg-gray-900 bg-opacity-60 flex items-center justify-center z-50 p-4 backdrop-blur-sm">
   <div class="bg-white rounded-3xl w-full max-w-lg p-8 shadow-2xl">
     <h2 class="text-2xl font-bold mb-6 text-gray-800">✨ Crear Tarima Manual</h2>
-    
+
     <div class="space-y-4">
       <!-- Viaje - Ahora es OPCIONAL -->
       <div>
@@ -1014,7 +1503,7 @@ const guardarEdicionViaje = async () => {
         </select>
         <p class="text-xs text-gray-400 mt-1">Si no seleccionas un viaje, la tarima quedará como inventario general</p>
       </div>
-      
+
       <div>
         <label class="block text-sm font-bold text-gray-600 mb-1">Tipo de Fruta *</label>
         <select v-model="nuevaTarimaManual.tipo_fruta_id" class="w-full border p-3 rounded-xl">
@@ -1022,7 +1511,7 @@ const guardarEdicionViaje = async () => {
           <option v-for="f in tiposFruta" :key="f.id" :value="f.id">{{ f.nombre }}</option>
         </select>
       </div>
-      
+
       <div>
         <label class="block text-sm font-bold text-gray-600 mb-1">Identificador de Tarima *</label>
         <input v-model="nuevaTarimaManual.numero_tarima_display" placeholder="Ej: T-100, MIX-01, INV-001" class="w-full border p-3 rounded-xl font-mono">
@@ -1055,6 +1544,76 @@ const guardarEdicionViaje = async () => {
   </div>
 </div>
 
+    <!-- Modal de detalle de salida -->
+    <div v-if="mostrarModalDetalleSalida" class="fixed inset-0 bg-gray-900 bg-opacity-60 flex items-center justify-center z-50 p-4">
+      <div class="bg-white rounded-3xl w-full max-w-2xl p-8 max-h-[90vh] overflow-y-auto">
+        <h2 class="text-2xl font-bold mb-4 text-gray-800">Detalle de Salida #{{ salidaSeleccionada.id }}</h2>
+        <div class="space-y-2 mb-6">
+          <p><span class="font-bold text-gray-500">Cliente:</span> {{ salidaSeleccionada.cliente_nombre }}</p>
+          <p><span class="font-bold text-gray-500">Placa:</span> {{ salidaSeleccionada.placa }}</p>
+          <p><span class="font-bold text-gray-500">Fecha:</span> {{ formatearFecha(salidaSeleccionada.fecha_salida) }}</p>
+          <p><span class="font-bold text-gray-500">Peso Total:</span> {{ formatearPeso(salidaSeleccionada.peso_total_fisico) }} kg</p>
+        </div>
+        <h3 class="font-bold text-gray-700 mb-3">Tarimas en esta salida:</h3>
+        <div class="max-h-60 overflow-y-auto mb-6 border rounded-xl">
+          <table class="min-w-full text-left text-sm">
+            <thead class="bg-gray-50 border-b">
+              <tr>
+                <th class="p-3">Tarima</th>
+                <th class="p-3">Fruta</th>
+                <th class="p-3 text-right">Cajas</th>
+                <th class="p-3 text-right">Peso</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="tarima in tarimasDetalleSalida" :key="tarima.id" class="border-b">
+                <td class="p-3 font-bold">{{ tarima.numero_tarima_display }}</td>
+                <td class="p-3">{{ tarima.fruta_nombre }}</td>
+                <td class="p-3 text-right">{{ tarima.cantidad_cajas }}</td>
+                <td class="p-3 text-right">{{ formatearPeso(tarima.peso_neto) }} kg</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <button @click="mostrarModalDetalleSalida = false" class="w-full bg-gray-100 py-3 rounded-xl font-bold text-gray-600">
+          Cerrar
+        </button>
+      </div>
+    </div>
+
+    <!-- Modal: Mapa Frío para Salida -->
+    <div v-if="modalMapaFrioSalida" class="fixed inset-0 bg-gray-900 bg-opacity-60 flex items-center justify-center z-50 p-4 backdrop-blur-sm">
+      <div class="bg-white rounded-3xl w-full max-w-5xl overflow-hidden shadow-2xl flex flex-col max-h-[90vh]">
+        <div class="bg-blue-50 border-b border-blue-100 p-6 flex justify-between items-center">
+          <h2 class="text-2xl font-bold text-blue-800">❄️ Seleccionar desde Cuarto Frío</h2>
+          <button @click="modalMapaFrioSalida = false" class="text-blue-400 hover:text-blue-600 text-3xl font-light">&times;</button>
+        </div>
+        <div class="p-8 overflow-y-auto overflow-x-auto text-center md:text-left bg-gray-50">
+          <p class="text-gray-500 font-bold mb-4 text-center">Haz clic en una tarima ocupada para seleccionarla para este viaje de salida.</p>
+          <div class="inline-grid grid-cols-10 gap-2 min-w-[800px] mx-auto">
+            <template v-for="fila in matrizFrio" :key="'fila-salida-'+fila[0]?.y">
+              <div v-for="celda in fila" :key="`celda-salida-${celda.x}-${celda.y}`" 
+                   @click="seleccionarDesdeMapaFrio(celda)"
+                   class="h-28 rounded-xl border-2 flex flex-col items-center justify-center transition-all relative overflow-hidden"
+                   :class="[
+                     celda.ocupada ? (colorClasesPorViaje(celda.ocupada.viaje_id, celda.ocupada.es_maquila) + ' shadow-md cursor-pointer hover:ring-4 hover:ring-orange-400 active:scale-95') : 'border-dashed cursor-not-allowed opacity-40',
+                     !celda.ocupada && (celda.x === 5 || celda.x === 6) ? 'bg-gray-200 border-gray-400' : (!celda.ocupada ? 'bg-gray-100 border-gray-300' : '')
+                   ]">
+                   <template v-if="celda.ocupada">
+                     <span class="text-[9px] uppercase font-black truncate w-full text-center px-1 opacity-90 mt-2 z-0">{{celda.ocupada.nombre_dueno}}</span>
+                     <span class="text-base font-black leading-tight my-1">{{formatearPeso(celda.ocupada.peso_neto)}}</span>
+                     <span class="text-[8px] font-bold">{{celda.ocupada.fecha_corta}} | {{celda.ocupada.numero_tarima_display}}</span>
+                     <span class="text-[8px] font-bold bg-black/20 px-1.5 py-0.5 rounded-full mt-1 mb-1 truncate max-w-[90%]">{{celda.ocupada.fruta_nombre}}</span>
+                   </template>
+                   <template v-else>
+                      <span class="text-gray-400 font-mono text-[10px] font-bold">{{celda.x}}, {{celda.y}}</span>
+                   </template>
+              </div>
+            </template>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 

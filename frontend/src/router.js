@@ -7,12 +7,17 @@ import ZonaB from './views/ZonaB.vue'
 import TVFrio from './views/TVFrio.vue'
 import Dashboard from './views/Dashboard.vue'
 
+import CuentasPorCobrar from './views/CuentasPorCobrar.vue'
+import CuentasPorPagar from './views/CuentasPorPagar.vue'
+
 const routes = [
     { path: '/', component: Home },
     { path: '/dashboard', component: Dashboard },
     { path: '/bascula', component: ZonaA },
     { path: '/admin', component: ZonaB },
-    { path: '/tv', name: 'TVFrio', component: TVFrio }
+    { path: '/tv', name: 'TVFrio', component: TVFrio },
+    { path: '/cuentas-cobrar', component: CuentasPorCobrar },
+    { path: '/cuentas-pagar', component: CuentasPorPagar }
 ]
 
 const router = createRouter({

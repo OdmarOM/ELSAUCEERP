@@ -74,7 +74,7 @@ def create_db_and_tables():
         FOREIGN KEY(cliente_id) REFERENCES cliente(id)
     )""")
 
-    # 6. Viaje (Flujo Interno - Actualizado con cliente_id)
+    # 6. Viaje (Flujo Interno - Actualizado con cliente_id y fecha_salida)
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS viaje (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -82,14 +82,34 @@ def create_db_and_tables():
         cliente_id INTEGER,
         placa TEXT NOT NULL,
         fecha_entrada DATETIME,
+        fecha_salida DATETIME,
         estado TEXT DEFAULT 'ACTIVO',
         peso_total_fisico REAL DEFAULT 0.0,
         peso_total_teorico REAL DEFAULT 0.0,
         diferencia_peso REAL DEFAULT 0.0,
         tipo_operacion TEXT DEFAULT 'ACOPIO',
+        tipo TEXT DEFAULT 'ENTRADA',
         FOREIGN KEY(acopiador_id) REFERENCES acopiador(id),
         FOREIGN KEY(cliente_id) REFERENCES cliente(id)
     )""")
+
+    # Agregar columnas si no existen (para tablas existentes)
+    try:
+        cursor.execute("ALTER TABLE viaje ADD COLUMN fecha_salida DATETIME")
+    except sqlite3.OperationalError:
+        # La columna ya existe
+        pass
+
+    try:
+        cursor.execute("ALTER TABLE viaje ADD COLUMN tipo TEXT DEFAULT 'ENTRADA'")
+    except sqlite3.OperationalError:
+        # La columna ya existe
+        pass
+
+    try:
+        cursor.execute("ALTER TABLE viaje ADD COLUMN precio_kg_venta REAL DEFAULT 0.0")
+    except sqlite3.OperationalError:
+        pass
 
     # 7. Pagos (módulo financiero)
     cursor.execute("""
@@ -163,9 +183,29 @@ def create_db_and_tables():
         origen TEXT DEFAULT 'PESADA',
         origen_id INTEGER,
         activo INTEGER DEFAULT 1,
+        fecha_salida DATETIME,
+        viaje_salida_id INTEGER,
+        peso_salida REAL,
         FOREIGN KEY(viaje_id) REFERENCES viaje(id),
-        FOREIGN KEY(tipo_fruta_id) REFERENCES tipofruta(id)
+        FOREIGN KEY(tipo_fruta_id) REFERENCES tipofruta(id),
+        FOREIGN KEY(viaje_salida_id) REFERENCES viaje(id)
     )""")
+
+    # Agregar columnas de seguimiento de salida si no existen
+    try:
+        cursor.execute("ALTER TABLE inventario_frio ADD COLUMN fecha_salida DATETIME")
+    except sqlite3.OperationalError:
+        pass
+
+    try:
+        cursor.execute("ALTER TABLE inventario_frio ADD COLUMN viaje_salida_id INTEGER")
+    except sqlite3.OperationalError:
+        pass
+
+    try:
+        cursor.execute("ALTER TABLE inventario_frio ADD COLUMN peso_salida REAL")
+    except sqlite3.OperationalError:
+        pass
 
     # 11. Cuarto Frío - Ahora apunta a inventario_frio
     cursor.execute("""
@@ -177,11 +217,53 @@ def create_db_and_tables():
         FOREIGN KEY(inventario_frio_id) REFERENCES inventario_frio(id)
     )""")
 
+    # 12. Viaje Salida Tarima - Trazabilidad de tarimas en salidas
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS viaje_salida_tarima (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        viaje_id INTEGER NOT NULL,
+        inventario_frio_id INTEGER NOT NULL,
+        fecha_salida DATETIME DEFAULT CURRENT_TIMESTAMP,
+        peso_salida REAL,
+        observaciones TEXT,
+        FOREIGN KEY(viaje_id) REFERENCES viaje(id),
+        FOREIGN KEY(inventario_frio_id) REFERENCES inventario_frio(id)
+    )""")
+
+    # 13. Cuentas por Cobrar (Clientes)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS cuenta_cobrar (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        cliente_id INTEGER NOT NULL,
+        viaje_salida_id INTEGER,
+        maquila_id INTEGER,
+        fecha_emision DATETIME DEFAULT CURRENT_TIMESTAMP,
+        monto_total REAL NOT NULL DEFAULT 0.0,
+        saldo_pendiente REAL NOT NULL DEFAULT 0.0,
+        estado TEXT DEFAULT 'PENDIENTE',
+        FOREIGN KEY(cliente_id) REFERENCES cliente(id),
+        FOREIGN KEY(viaje_salida_id) REFERENCES viaje(id),
+        FOREIGN KEY(maquila_id) REFERENCES maquila(id)
+    )""")
+
+    # 14. Cobros a Clientes (Pagos recibidos)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS cobro_cliente (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        cuenta_cobrar_id INTEGER NOT NULL,
+        monto_cobrado REAL NOT NULL,
+        fecha_cobro DATETIME DEFAULT CURRENT_TIMESTAMP,
+        metodo_pago TEXT,
+        referencia TEXT,
+        FOREIGN KEY(cuenta_cobrar_id) REFERENCES cuenta_cobrar(id)
+    )""")
+
     # ================= ÍNDICES PARA OPTIMIZACIÓN =================
     # Índices para consultas frecuentes
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_viaje_estado ON viaje(estado)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_viaje_tipo ON viaje(tipo_operacion)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_viaje_fecha ON viaje(fecha_entrada)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_viaje_fecha_salida ON viaje(fecha_salida)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_notaproveedor_viaje ON notaproveedor(viaje_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_notaproveedor_proveedor ON notaproveedor(proveedor_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_notaproveedor_pago ON notaproveedor(pago_id)")
@@ -192,6 +274,11 @@ def create_db_and_tables():
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_inventario_frio_tipo ON inventario_frio(tipo_fruta_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_pago_proveedor ON pago(proveedor_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_cuartofrio_ubicacion ON cuartofrio(fila_x, columna_y)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_viaje_salida_tarima_viaje ON viaje_salida_tarima(viaje_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_viaje_salida_tarima_inventario ON viaje_salida_tarima(inventario_frio_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_cuenta_cobrar_cliente ON cuenta_cobrar(cliente_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_cuenta_cobrar_estado ON cuenta_cobrar(estado)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_cobro_cliente_cuenta ON cobro_cliente(cuenta_cobrar_id)")
 
     conn.commit()
     conn.close()

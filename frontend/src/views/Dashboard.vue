@@ -5,6 +5,18 @@ import { get } from '../utils/api.js'
 import { useCatalogsPolling } from '../utils/polling.js'
 import { format } from 'date-fns'
 import { es } from 'date-fns/locale'
+import { Bar } from 'vue-chartjs'
+import {
+  Chart as ChartJS,
+  Title,
+  Tooltip,
+  Legend,
+  BarElement,
+  CategoryScale,
+  LinearScale
+} from 'chart.js'
+
+ChartJS.register(CategoryScale, LinearScale, BarElement, Title, Tooltip, Legend)
 
 const API_URL = '/api'
 
@@ -16,9 +28,12 @@ const tiposFruta = ref([])
 const viajes = ref([])
 const notas = ref([])
 const registrosBascula = ref([])
+const registrosSalida = ref([])
 const pagos = ref([])
 const inventarioFrio = ref([])
 const ubicacionesFrio = ref([])
+const cuentasPorCobrar = ref([])
+const cobrosTotales = ref([])
 
 // Filtros
 const fechaInicio = ref(new Date(new Date().setDate(new Date().getDate() - 30)).toISOString().split('T')[0])
@@ -26,14 +41,18 @@ const fechaFin = ref(new Date().toISOString().split('T')[0])
 const periodoSeleccionado = ref('mes') // semana, mes, trimestre, año
 
 // Polling
-const { data: catalogsData, loading } = useCatalogsPolling(fetchCatalogos, {
+const { data: catalogsData, loading, start: startPolling } = useCatalogsPolling(fetchCatalogos, {
   interval: 30000,
   immediate: true
 })
 
+onMounted(() => {
+  startPolling()
+})
+
 async function fetchCatalogos() {
   try {
-    const [resAcop, resProv, resCli, resFruta, resViajes, resNotas, resRegistros, resPagos, resInventario, resFrio] = await Promise.all([
+    const promises = [
       get(`${API_URL}/acopiadores`),
       get(`${API_URL}/proveedores`),
       get(`${API_URL}/clientes`),
@@ -41,60 +60,122 @@ async function fetchCatalogos() {
       get(`${API_URL}/viajes`),
       get(`${API_URL}/notas`),
       get(`${API_URL}/registros-bascula`),
+      get(`${API_URL}/registros-bascula-salida`),
       get(`${API_URL}/pagos`),
       get(`${API_URL}/inventario-frio`),
-      get(`${API_URL}/cuarto-frio`)
-    ])
+      get(`${API_URL}/cuarto-frio`),
+      get(`${API_URL}/finanzas/cobrar`),
+      get(`${API_URL}/finanzas/cobros`)
+    ]
     
-    acopiadores.value = resAcop
-    proveedores.value = resProv
-    clientes.value = resCli
-    tiposFruta.value = resFruta
-    viajes.value = resViajes
-    notas.value = resNotas
-    registrosBascula.value = resRegistros
-    pagos.value = resPagos
-    inventarioFrio.value = resInventario
-    ubicacionesFrio.value = resFrio
+    const results = await Promise.allSettled(promises)
+    
+    // Función auxiliar para extraer el valor o [] si falló
+    const getValue = (index) => results[index].status === 'fulfilled' ? results[index].value : []
+    
+    acopiadores.value = getValue(0)
+    proveedores.value = getValue(1)
+    clientes.value = getValue(2)
+    tiposFruta.value = getValue(3)
+    viajes.value = getValue(4)
+    notas.value = getValue(5)
+    registrosBascula.value = getValue(6)
+    registrosSalida.value = getValue(7)
+    pagos.value = getValue(8)
+    inventarioFrio.value = getValue(9)
+    ubicacionesFrio.value = getValue(10)
+    cuentasPorCobrar.value = getValue(11)
+    cobrosTotales.value = getValue(12)
+    
+    // Log failures
+    results.forEach((r, i) => {
+      if (r.status === 'rejected') {
+        console.error(`Error fetching catalog index ${i}:`, r.reason)
+      }
+    })
   } catch (error) {
-    console.error('Error fetching catalogs:', error)
+    console.error('Error in fetchCatalogos:', error)
   }
 }
 
-// Métricas principales
-const metricasPrincipales = computed(() => {
-  const viajesDelPeriodo = viajes.value.filter(v => 
-    v.fecha_entrada && v.fecha_entrada >= fechaInicio.value && v.fecha_entrada <= fechaFin.value
-  )
+// Métricas Acopio (Entradas)
+const metricasAcopio = computed(() => {
+  const viajesEntrada = viajes.value.filter(v => {
+    if (v.tipo !== 'ENTRADA') return false
+    if (!v.fecha_entrada) return false
+    const fecha = v.fecha_entrada.substring(0, 10)
+    return fecha >= fechaInicio.value && fecha <= fechaFin.value
+  })
   
-  const pesoTotalFisico = viajesDelPeriodo.reduce((sum, v) => {
+  const pesoTotalFisico = viajesEntrada.reduce((sum, v) => {
     const tarimas = registrosBascula.value.filter(r => r.viaje_id === v.id)
     return sum + tarimas.reduce((s, t) => s + parseFloat(t.peso_neto || 0), 0)
   }, 0)
   
-  const pesoTotalTeorico = viajesDelPeriodo.reduce((sum, v) => 
+  const pesoTotalTeorico = viajesEntrada.reduce((sum, v) => 
     sum + parseFloat(v.peso_total_teorico || 0), 0
   )
   
-  const totalPagado = pagos.value.filter(p => 
-    p.fecha_pago && p.fecha_pago >= fechaInicio.value && p.fecha_pago <= fechaFin.value
-  ).reduce((sum, p) => sum + parseFloat(p.monto_total || 0), 0)
+  const totalPagado = pagos.value.filter(p => {
+    if (!p.fecha_pago) return false
+    const fecha = p.fecha_pago.substring(0, 10)
+    return fecha >= fechaInicio.value && fecha <= fechaFin.value
+  }).reduce((sum, p) => sum + parseFloat(p.monto_total || p.monto || 0), 0)
   
   const deudaPendiente = notas.value.filter(n => n.estado_pago === 'PENDIENTE')
     .reduce((sum, n) => sum + parseFloat(n.total_monetario || 0), 0)
   
+  return {
+    viajesCount: viajesEntrada.length,
+    pesoTotalFisico: pesoTotalFisico.toFixed(2),
+    pesoTotalTeorico: pesoTotalTeorico.toFixed(2),
+    diferencia: (pesoTotalFisico - pesoTotalTeorico).toFixed(2),
+    totalPagado: totalPagado.toFixed(2),
+    deudaPendiente: deudaPendiente.toFixed(2)
+  }
+})
+
+// Métricas Ventas (Salidas)
+const metricasVentas = computed(() => {
+  const viajesSalida = viajes.value.filter(v => {
+    if (v.tipo !== 'SALIDA') return false
+    if (!v.fecha_entrada) return false
+    const fecha = v.fecha_entrada.substring(0, 10)
+    return fecha >= fechaInicio.value && fecha <= fechaFin.value
+  })
+  
+  const pesoTotalEnviado = viajesSalida.reduce((sum, v) => {
+    const tarimas = registrosSalida.value.filter(r => r.viaje_id === v.id)
+    return sum + tarimas.reduce((s, t) => s + parseFloat(t.peso_salida || t.peso_neto || 0), 0)
+  }, 0)
+  
+  const cuentasDelPeriodo = cuentasPorCobrar.value.filter(c => {
+    if (!c.fecha_emision) return false
+    const fecha = c.fecha_emision.substring(0, 10)
+    return fecha >= fechaInicio.value && fecha <= fechaFin.value
+  })
+  
+  const totalVendido = cuentasDelPeriodo.reduce((sum, c) => sum + parseFloat(c.monto_total || 0), 0)
+  const cuentasPorCobrarPendientes = cuentasDelPeriodo
+    .reduce((sum, c) => sum + Math.max(0, parseFloat(c.saldo_pendiente || 0)), 0)
+  const totalCobrado = totalVendido - cuentasPorCobrarPendientes
+  
+  return {
+    viajesCount: viajesSalida.length,
+    pesoTotalEnviado: pesoTotalEnviado.toFixed(2),
+    totalCobrado: totalCobrado.toFixed(2),
+    cuentasPorCobrar: cuentasPorCobrarPendientes.toFixed(2)
+  }
+})
+
+// Inventario Físico
+const metricasInventario = computed(() => {
   const ocupacionFrio = ubicacionesFrio.value.filter(u => u.inventario_frio_id).length
   const tarimasEnBodega = inventarioFrio.value.filter(i => i.activo === 1 && 
     !ubicacionesFrio.value.some(u => u.inventario_frio_id === i.id)
   ).length
   
   return {
-    viajesCount: viajesDelPeriodo.length,
-    pesoTotalFisico: pesoTotalFisico.toFixed(2),
-    pesoTotalTeorico: pesoTotalTeorico.toFixed(2),
-    diferencia: (pesoTotalFisico - pesoTotalTeorico).toFixed(2),
-    totalPagado: totalPagado.toFixed(2),
-    deudaPendiente: deudaPendiente.toFixed(2),
     ocupacionFrio: ocupacionFrio,
     capacidadFrio: 50,
     tarimasEnBodega: tarimasEnBodega
@@ -102,28 +183,125 @@ const metricasPrincipales = computed(() => {
 })
 
 // Producción por día
+// Producción por día (dividida)
 const produccionPorDia = computed(() => {
   const dias = {}
   
   viajes.value.forEach(v => {
     if (!v.fecha_entrada) return
     
-    const fecha = v.fecha_entrada.split('T')[0]
+    const fecha = v.fecha_entrada.substring(0, 10)
     if (!dias[fecha]) {
-      dias[fecha] = { fecha, peso: 0, viajes: 0 }
+      dias[fecha] = { fecha, pesoEntrada: 0, pesoSalida: 0 }
     }
     
-    const tarimas = registrosBascula.value.filter(r => r.viaje_id === v.id)
-    const peso = tarimas.reduce((s, t) => s + parseFloat(t.peso_neto || 0), 0)
-    
-    dias[fecha].peso += peso
-    dias[fecha].viajes += 1
+    if (v.tipo === 'ENTRADA') {
+      const tarimas = registrosBascula.value.filter(r => r.viaje_id === v.id)
+      const peso = tarimas.reduce((s, t) => s + parseFloat(t.peso_neto || 0), 0)
+      dias[fecha].pesoEntrada += peso
+    } else {
+      const tarimas = registrosSalida.value.filter(r => r.viaje_id === v.id)
+      const peso = tarimas.reduce((s, t) => s + parseFloat(t.peso_salida || t.peso_neto || 0), 0)
+      dias[fecha].pesoSalida += peso
+    }
   })
   
   return Object.values(dias)
     .sort((a, b) => new Date(b.fecha) - new Date(a.fecha))
     .slice(0, 14) // Últimos 14 días
 })
+
+// Finanzas por día (Ingresos vs Egresos)
+const finanzasPorDia = computed(() => {
+  const dias = {}
+  
+  pagos.value.forEach(p => {
+    if (!p.fecha_pago) return
+    const fecha = p.fecha_pago.substring(0, 10)
+    if (!dias[fecha]) dias[fecha] = { fecha, ingresos: 0, egresos: 0 }
+    dias[fecha].egresos += parseFloat(p.monto_total || p.monto || 0)
+  })
+  
+  cobrosTotales.value.forEach(c => {
+    if (!c.fecha_cobro) return
+    const fecha = c.fecha_cobro.substring(0, 10)
+    if (!dias[fecha]) dias[fecha] = { fecha, ingresos: 0, egresos: 0 }
+    dias[fecha].ingresos += parseFloat(c.monto_cobrado || 0)
+  })
+  
+  return Object.values(dias)
+    .sort((a, b) => new Date(b.fecha) - new Date(a.fecha))
+    .slice(0, 14) // Últimos 14 días
+})
+
+// Datos para la gráfica de Volumen
+const chartDataVolumen = computed(() => {
+  const reversed = [...produccionPorDia.value].reverse()
+  return {
+    labels: reversed.map(d => formatearFecha(d.fecha)),
+    datasets: [
+      {
+        label: 'Acopio (kg)',
+        backgroundColor: '#3b82f6',
+        data: reversed.map(d => d.pesoEntrada)
+      },
+      {
+        label: 'Ventas (kg)',
+        backgroundColor: '#10b981',
+        data: reversed.map(d => d.pesoSalida)
+      }
+    ]
+  }
+})
+
+const chartOptionsVolumen = {
+  responsive: true,
+  maintainAspectRatio: false,
+  plugins: {
+    legend: { position: 'bottom' },
+    tooltip: {
+      callbacks: {
+        label: (context) => `${context.dataset.label}: ${context.parsed.y.toFixed(2)} kg`
+      }
+    }
+  }
+}
+
+// Datos para la gráfica de Finanzas
+const chartDataFinanzas = computed(() => {
+  const reversed = [...finanzasPorDia.value].reverse()
+  return {
+    labels: reversed.map(d => formatearFecha(d.fecha)),
+    datasets: [
+      {
+        label: 'Ingresos',
+        backgroundColor: '#f97316',
+        data: reversed.map(d => d.ingresos)
+      },
+      {
+        label: 'Egresos',
+        backgroundColor: '#3b82f6',
+        data: reversed.map(d => d.egresos)
+      }
+    ]
+  }
+})
+
+const chartOptionsFinanzas = {
+  responsive: true,
+  maintainAspectRatio: false,
+  plugins: {
+    legend: { position: 'bottom' },
+    tooltip: {
+      callbacks: {
+        label: (context) => {
+          const value = context.parsed.y
+          return `${context.dataset.label}: ${new Intl.NumberFormat('es-MX', { style: 'currency', currency: 'MXN' }).format(value)}`
+        }
+      }
+    }
+  }
+}
 
 // Producción por tipo de fruta
 const produccionPorFruta = computed(() => {
@@ -142,6 +320,22 @@ const produccionPorFruta = computed(() => {
     }
     
     frutas[frutaId].peso += parseFloat(r.peso_neto || 0)
+    frutas[frutaId].tarimas += 1
+  })
+  
+  registrosSalida.value.forEach(r => {
+    const frutaId = r.tipo_fruta_id
+    if (!frutas[frutaId]) {
+      const fruta = tiposFruta.value.find(f => f.id === frutaId)
+      frutas[frutaId] = {
+        id: frutaId,
+        nombre: fruta?.nombre || 'Desconocido',
+        peso: 0,
+        tarimas: 0
+      }
+    }
+    
+    frutas[frutaId].peso += parseFloat(r.peso_salida || r.peso_neto || 0)
     frutas[frutaId].tarimas += 1
   })
   
@@ -246,20 +440,39 @@ const cambiarPeriodo = (periodo) => {
 
 // Formatear fecha
 const formatearFecha = (fecha) => {
-  return format(new Date(fecha), 'dd/MM/yyyy', { locale: es })
+  if (!fecha) return ''
+  try {
+    const d = new Date(fecha)
+    if (isNaN(d.getTime())) return String(fecha)
+    return format(d, 'dd/MM/yyyy', { locale: es })
+  } catch (e) {
+    return String(fecha)
+  }
 }
 
 // Formatear moneda
 const formatearMoneda = (valor) => {
-  return new Intl.NumberFormat('es-MX', {
-    style: 'currency',
-    currency: 'MXN'
-  }).format(valor)
+  try {
+    const num = parseFloat(valor || 0)
+    if (isNaN(num)) return '$0.00'
+    return new Intl.NumberFormat('es-MX', {
+      style: 'currency',
+      currency: 'MXN'
+    }).format(num)
+  } catch (e) {
+    return '$0.00'
+  }
 }
 
 // Formatear peso
 const formatearPeso = (valor) => {
-  return parseFloat(valor || 0).toFixed(2) + ' kg'
+  try {
+    const num = parseFloat(valor || 0)
+    if (isNaN(num)) return '0.00 kg'
+    return num.toFixed(2) + ' kg'
+  } catch (e) {
+    return '0.00 kg'
+  }
 }
 </script>
 
@@ -286,46 +499,88 @@ const formatearPeso = (valor) => {
       </div>
     </div>
 
-    <!-- Métricas principales -->
+    <!-- Operación de Acopio (Entradas) -->
+    <h2 class="text-xl font-bold text-gray-800 mb-4 mt-8">📥 Operación de Acopio (Entradas)</h2>
     <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-      <div class="bg-white p-6 rounded-2xl shadow-sm border">
+      <div class="bg-white p-6 rounded-2xl shadow-sm border border-l-4 border-l-blue-500">
         <div class="flex items-center justify-between mb-4">
-          <span class="text-gray-500 text-sm font-medium">Viajes del Periodo</span>
+          <span class="text-gray-500 text-sm font-medium">Viajes Recibidos</span>
           <span class="text-2xl">🚚</span>
         </div>
-        <div class="text-3xl font-black text-gray-800">{{ metricasPrincipales.viajesCount }}</div>
+        <div class="text-3xl font-black text-gray-800">{{ metricasAcopio.viajesCount }}</div>
         <div class="text-xs text-gray-400 mt-2">Desde {{ formatearFecha(fechaInicio) }}</div>
       </div>
       
-      <div class="bg-white p-6 rounded-2xl shadow-sm border">
+      <div class="bg-white p-6 rounded-2xl shadow-sm border border-l-4 border-l-blue-500">
         <div class="flex items-center justify-between mb-4">
-          <span class="text-gray-500 text-sm font-medium">Peso Total Físico</span>
+          <span class="text-gray-500 text-sm font-medium">Peso Total Acopiado</span>
           <span class="text-2xl">⚖️</span>
         </div>
-        <div class="text-3xl font-black text-blue-600">{{ formatearPeso(metricasPrincipales.pesoTotalFisico) }}</div>
+        <div class="text-3xl font-black text-blue-600">{{ formatearPeso(metricasAcopio.pesoTotalFisico) }}</div>
         <div class="text-xs text-gray-400 mt-2">Peso neto de báscula</div>
       </div>
       
-      <div class="bg-white p-6 rounded-2xl shadow-sm border">
+      <div class="bg-white p-6 rounded-2xl shadow-sm border border-l-4 border-l-blue-500">
         <div class="flex items-center justify-between mb-4">
-          <span class="text-gray-500 text-sm font-medium">Total Pagado</span>
+          <span class="text-gray-500 text-sm font-medium">Total Pagado a Prov.</span>
           <span class="text-2xl">💰</span>
         </div>
-        <div class="text-3xl font-black text-emerald-600">{{ formatearMoneda(metricasPrincipales.totalPagado) }}</div>
-        <div class="text-xs text-gray-400 mt-2">Pagos en el periodo</div>
+        <div class="text-3xl font-black text-emerald-600">{{ formatearMoneda(metricasAcopio.totalPagado) }}</div>
+        <div class="text-xs text-gray-400 mt-2">Compras pagadas</div>
       </div>
       
-      <div class="bg-white p-6 rounded-2xl shadow-sm border">
+      <div class="bg-white p-6 rounded-2xl shadow-sm border border-l-4 border-l-blue-500">
         <div class="flex items-center justify-between mb-4">
-          <span class="text-gray-500 text-sm font-medium">Deuda Pendiente</span>
-          <span class="text-2xl">📊</span>
+          <span class="text-gray-500 text-sm font-medium">Cuentas por Pagar</span>
+          <span class="text-2xl">📉</span>
         </div>
-        <div class="text-3xl font-black text-orange-600">{{ formatearMoneda(metricasPrincipales.deudaPendiente) }}</div>
-        <div class="text-xs text-gray-400 mt-2">Notas por pagar</div>
+        <div class="text-3xl font-black text-orange-600">{{ formatearMoneda(metricasAcopio.deudaPendiente) }}</div>
+        <div class="text-xs text-gray-400 mt-2">Deuda a proveedores</div>
       </div>
     </div>
 
-    <!-- Segunda fila de métricas -->
+    <!-- Operación de Ventas (Salidas) -->
+    <h2 class="text-xl font-bold text-gray-800 mb-4 mt-8">📤 Operación de Ventas (Salidas)</h2>
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+      <div class="bg-white p-6 rounded-2xl shadow-sm border border-l-4 border-l-emerald-500">
+        <div class="flex items-center justify-between mb-4">
+          <span class="text-gray-500 text-sm font-medium">Viajes Enviados</span>
+          <span class="text-2xl">🚛</span>
+        </div>
+        <div class="text-3xl font-black text-gray-800">{{ metricasVentas.viajesCount }}</div>
+        <div class="text-xs text-gray-400 mt-2">Desde {{ formatearFecha(fechaInicio) }}</div>
+      </div>
+      
+      <div class="bg-white p-6 rounded-2xl shadow-sm border border-l-4 border-l-emerald-500">
+        <div class="flex items-center justify-between mb-4">
+          <span class="text-gray-500 text-sm font-medium">Peso Total Enviado</span>
+          <span class="text-2xl">📦</span>
+        </div>
+        <div class="text-3xl font-black text-emerald-600">{{ formatearPeso(metricasVentas.pesoTotalEnviado) }}</div>
+        <div class="text-xs text-gray-400 mt-2">Kilos facturados</div>
+      </div>
+      
+      <div class="bg-white p-6 rounded-2xl shadow-sm border border-l-4 border-l-emerald-500">
+        <div class="flex items-center justify-between mb-4">
+          <span class="text-gray-500 text-sm font-medium">Total Cobrado</span>
+          <span class="text-2xl">💳</span>
+        </div>
+        <div class="text-3xl font-black text-blue-600">{{ formatearMoneda(metricasVentas.totalCobrado) }}</div>
+        <div class="text-xs text-gray-400 mt-2">Ventas pagadas</div>
+      </div>
+      
+      <div class="bg-white p-6 rounded-2xl shadow-sm border border-l-4 border-l-emerald-500">
+        <div class="flex items-center justify-between mb-4">
+          <span class="text-gray-500 text-sm font-medium">Cuentas por Cobrar</span>
+          <span class="text-2xl">📈</span>
+        </div>
+        <div class="text-3xl font-black text-orange-600">{{ formatearMoneda(metricasVentas.cuentasPorCobrar) }}</div>
+        <div class="text-xs text-gray-400 mt-2">Deuda de clientes</div>
+      </div>
+    </div>
+
+    <!-- Inventario Físico -->
+    <h2 class="text-xl font-bold text-gray-800 mb-4 mt-8">❄️ Inventario y Conciliación</h2>
     <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
       <div class="bg-white p-6 rounded-2xl shadow-sm border">
         <div class="flex items-center justify-between mb-4">
@@ -333,16 +588,16 @@ const formatearPeso = (valor) => {
           <span class="text-2xl">❄️</span>
         </div>
         <div class="flex items-end gap-2">
-          <div class="text-3xl font-black text-blue-600">{{ metricasPrincipales.ocupacionFrio }}</div>
-          <div class="text-lg text-gray-400 mb-1">/ {{ metricasPrincipales.capacidadFrio }}</div>
+          <div class="text-3xl font-black text-blue-600">{{ metricasInventario.ocupacionFrio }}</div>
+          <div class="text-lg text-gray-400 mb-1">/ {{ metricasInventario.capacidadFrio }}</div>
         </div>
         <div class="w-full bg-gray-200 rounded-full h-2 mt-3">
           <div 
             class="bg-blue-500 h-2 rounded-full transition-all"
-            :style="{ width: (metricasPrincipales.ocupacionFrio / metricasPrincipales.capacidadFrio * 100) + '%' }"
+            :style="{ width: (metricasInventario.ocupacionFrio / metricasInventario.capacidadFrio * 100) + '%' }"
           ></div>
         </div>
-        <div class="text-xs text-gray-400 mt-2">{{ ((metricasPrincipales.ocupacionFrio / metricasPrincipales.capacidadFrio) * 100).toFixed(1) }}% ocupado</div>
+        <div class="text-xs text-gray-400 mt-2">{{ ((metricasInventario.ocupacionFrio / metricasInventario.capacidadFrio) * 100).toFixed(1) }}% ocupado</div>
       </div>
       
       <div class="bg-white p-6 rounded-2xl shadow-sm border">
@@ -350,53 +605,55 @@ const formatearPeso = (valor) => {
           <span class="text-gray-500 text-sm font-medium">Tarimas en Bodega</span>
           <span class="text-2xl">🧱</span>
         </div>
-        <div class="text-3xl font-black text-orange-600">{{ metricasPrincipales.tarimasEnBodega }}</div>
+        <div class="text-3xl font-black text-orange-600">{{ metricasInventario.tarimasEnBodega }}</div>
         <div class="text-xs text-gray-400 mt-2">Sin ubicación en frío</div>
       </div>
       
       <div class="bg-white p-6 rounded-2xl shadow-sm border">
         <div class="flex items-center justify-between mb-4">
-          <span class="text-gray-500 text-sm font-medium">Diferencia Físico vs Teórico</span>
+          <span class="text-gray-500 text-sm font-medium">Diferencia Acopio (Fís. vs Teór.)</span>
           <span class="text-2xl">📉</span>
         </div>
         <div 
           class="text-3xl font-black"
-          :class="parseFloat(metricasPrincipales.diferencia) >= 0 ? 'text-emerald-600' : 'text-red-600'"
+          :class="parseFloat(metricasAcopio.diferencia) >= 0 ? 'text-emerald-600' : 'text-red-600'"
         >
-          {{ parseFloat(metricasPrincipales.diferencia) >= 0 ? '+' : '' }}{{ formatearPeso(metricasPrincipales.diferencia) }}
+          {{ parseFloat(metricasAcopio.diferencia) >= 0 ? '+' : '' }}{{ formatearPeso(metricasAcopio.diferencia) }}
         </div>
-        <div class="text-xs text-gray-400 mt-2">Conciliación de pesos</div>
+        <div class="text-xs text-gray-400 mt-2">Conciliación de pesos de entrada</div>
       </div>
     </div>
 
     <!-- Gráficos y tablas -->
     <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
-      <!-- Producción por día -->
+      <!-- Volumen por día -->
       <div class="bg-white p-6 rounded-2xl shadow-sm border">
-        <h3 class="text-lg font-bold text-gray-800 mb-4">Producción por Día (Últimos 14 días)</h3>
-        <div class="space-y-3 max-h-80 overflow-y-auto">
-          <div 
-            v-for="dia in produccionPorDia" 
-            :key="dia.fecha"
-            class="flex items-center gap-4"
-          >
-            <div class="w-24 text-sm text-gray-600">{{ formatearFecha(dia.fecha) }}</div>
-            <div class="flex-1 bg-gray-100 rounded-full h-6 overflow-hidden">
-              <div 
-                class="bg-emerald-500 h-full rounded-full flex items-center justify-end pr-2"
-                :style="{ width: Math.min((dia.peso / Math.max(...produccionPorDia.map(d => d.peso))) * 100, 100) + '%' }"
-              >
-                <span class="text-xs text-white font-bold">{{ formatearPeso(dia.peso) }}</span>
-              </div>
-            </div>
-            <div class="w-16 text-sm text-gray-500 text-right">{{ dia.viajes }} viajes</div>
+        <h3 class="text-lg font-bold text-gray-800 mb-4">Volumen por Día (Últimos 14 días)</h3>
+        <div class="h-80 w-full">
+          <Bar v-if="produccionPorDia.length > 0" :data="chartDataVolumen" :options="chartOptionsVolumen" />
+          <div v-else class="text-gray-400 text-sm italic h-full flex items-center justify-center">
+            No hay registros de volumen en los últimos días.
           </div>
         </div>
       </div>
       
-      <!-- Producción por tipo de fruta -->
+      <!-- Finanzas por día -->
       <div class="bg-white p-6 rounded-2xl shadow-sm border">
-        <h3 class="text-lg font-bold text-gray-800 mb-4">Producción por Tipo de Fruta</h3>
+        <h3 class="text-lg font-bold text-gray-800 mb-4">Flujo Financiero por Día (Ingresos vs Egresos)</h3>
+        <div class="h-80 w-full">
+          <Bar v-if="finanzasPorDia.length > 0" :data="chartDataFinanzas" :options="chartOptionsFinanzas" />
+          <div v-else class="text-gray-400 text-sm italic h-full flex items-center justify-center">
+            No hay pagos ni cobros registrados en los últimos días.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Cuarta fila -->
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+      <!-- Volumen por tipo de fruta -->
+      <div class="bg-white p-6 rounded-2xl shadow-sm border">
+        <h3 class="text-lg font-bold text-gray-800 mb-4">Volumen por Tipo de Fruta</h3>
         <div class="space-y-3 max-h-80 overflow-y-auto">
           <div 
             v-for="fruta in produccionPorFruta" 

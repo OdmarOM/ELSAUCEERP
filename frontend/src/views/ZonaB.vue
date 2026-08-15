@@ -6,9 +6,90 @@ import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 const API_URL = '/api'
 
 const pestanaActual = ref('notas')
-const subPestanaNotas = ref('captura') 
+const subPestanaNotas = ref('captura')
 const vistaConciliacion = ref('historial')
 const cargando = ref(false)
+const viajesSalida = ref([])
+const tarimasDetalleSalida = ref([])
+const mostrarModalDetalleSalida = ref(false)
+const salidaSeleccionada = ref(null)
+
+const nuevoViajeSalida = ref({ cliente_id: '', placa: '', precio_kg_venta: 0.0 })
+
+const crearViajeSalida = async () => {
+  if (!nuevoViajeSalida.value.cliente_id || !nuevoViajeSalida.value.placa || nuevoViajeSalida.value.precio_kg_venta <= 0) {
+    alert('Por favor completa todos los campos y establece un precio válido.')
+    return
+  }
+
+  cargando.value = true
+  try {
+    const res = await fetch(`${API_URL}/viajes-salida`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(nuevoViajeSalida.value)
+    })
+    if (res.ok) {
+      nuevoViajeSalida.value = { cliente_id: '', placa: '', precio_kg_venta: 0.0 }
+      alert("Viaje planeado exitosamente. Ahora el operador de báscula podrá cargarlo.")
+      await fetchCatalogos()
+    }
+  } catch (e) {
+    console.error('Error planeando viaje de salida:', e)
+    alert('Error al planear viaje de salida')
+  } finally {
+    cargando.value = false
+  }
+}
+
+const mostrarModalEdicionSalida = ref(false)
+const salidaEditando = ref({})
+
+const abrirEdicionSalida = (viaje) => {
+  salidaEditando.value = { ...viaje }
+  mostrarModalEdicionSalida.value = true
+}
+
+const guardarEdicionSalida = async () => {
+  cargando.value = true
+  try {
+    const res = await fetch(`${API_URL}/viajes-salida/${salidaEditando.value.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(salidaEditando.value)
+    })
+    if (res.ok) {
+      mostrarModalEdicionSalida.value = false
+      await fetchCatalogos()
+    } else {
+      alert('Error al guardar cambios del viaje.')
+    }
+  } catch (e) {
+    console.error(e)
+    alert('Error actualizando viaje')
+  } finally {
+    cargando.value = false
+  }
+}
+
+const eliminarSalida = async (id) => {
+  if (!confirm('¿Estás seguro de eliminar este viaje de salida?')) return
+  cargando.value = true
+  try {
+    const res = await fetch(`${API_URL}/viajes-salida/${id}`, { method: 'DELETE' })
+    if (res.ok) {
+      await fetchCatalogos()
+    } else {
+      const data = await res.json()
+      alert(data.detail || 'Error al eliminar viaje.')
+    }
+  } catch (e) {
+    console.error(e)
+    alert('Error al eliminar viaje')
+  } finally {
+    cargando.value = false
+  }
+}
 
 const acopiadores = ref([])
 const proveedores = ref([])
@@ -29,12 +110,30 @@ const nuevoProveedor = ref({ nombre: '', contacto: '' })
 const nuevoCliente = ref({ nombre: '', contacto: '' })
 const nuevoTipoFruta = ref({ nombre: '', descripcion: '' })
 
-// NOTA CON FECHA MANUAL Y CÁLCULOS
-const nuevaNota = ref({ fecha: new Date().toISOString().split('T')[0], folio: '', proveedor_id: '', tipo_fruta_id: '', cantidad_cajas: '', tara_tarima: '', tara_caja: '', peso_bruto: '', peso_neto: 0, precio_kg: '', total_monetario: 0 })
-const nuevoPago = ref({ proveedor_id: '', folio_pago: '', fecha_pago: new Date().toISOString().split('T')[0], metodo_pago: 'TRANSFERENCIA', monto_total: 0, nota_ids: [] })
+// Función para obtener fecha local en formato YYYY-MM-DD (evita problema de zona horaria)
+const getFechaLocal = () => {
+  const fecha = new Date()
+  const year = fecha.getFullYear()
+  const month = String(fecha.getMonth() + 1).padStart(2, '0')
+  const day = String(fecha.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
 
-const fechaFiltroConciliacion = ref(new Date().toISOString().split('T')[0])
-const fechaFiltroNotasHistorial = ref(new Date().toISOString().split('T')[0])
+// Función para formatear fecha sin conversión de zona horaria (evita mostrar día anterior)
+const formatearFecha = (fechaStr) => {
+  if (!fechaStr) return 'N/A'
+  // Extraer solo la parte de la fecha (YYYY-MM-DD) ignorando la hora si existe
+  const fechaSolo = fechaStr.split('T')[0]
+  const [year, month, day] = fechaSolo.split('-')
+  return `${day}/${month}/${year}`
+}
+
+// NOTA CON FECHA MANUAL Y CÁLCULOS
+const nuevaNota = ref({ fecha: getFechaLocal(), folio: '', proveedor_id: '', tipo_fruta_id: '', cantidad_cajas: '', tara_tarima: '', tara_caja: '', peso_bruto: '', peso_neto: 0, precio_kg: '', total_monetario: 0 })
+const nuevoPago = ref({ proveedor_id: '', folio_pago: '', fecha_pago: getFechaLocal(), metodo_pago: 'TRANSFERENCIA', monto_total: 0, nota_ids: [] })
+
+const fechaFiltroConciliacion = ref(getFechaLocal())
+const fechaFiltroNotasHistorial = ref(getFechaLocal())
 
 // Modales
 const mostrarModalPago = ref(false)
@@ -78,13 +177,13 @@ watch(() => nuevoPago.value.nota_ids, (idsSeleccionados) => {
 
 const fetchCatalogos = async () => {
   try {
-    const [resAcop, resProv, resCli, resFruta, resViajes, resNotas, resRegistros, resPagos] = await Promise.all([
+    const [resAcop, resProv, resCli, resFruta, resViajes, resNotas, resRegistros, resPagos, resViajesSalida] = await Promise.all([
       fetch(`${API_URL}/acopiadores`), fetch(`${API_URL}/proveedores`), fetch(`${API_URL}/clientes`), fetch(`${API_URL}/tipos-fruta`),
-      fetch(`${API_URL}/viajes`), fetch(`${API_URL}/notas`), fetch(`${API_URL}/registros-bascula`), fetch(`${API_URL}/pagos`)
+      fetch(`${API_URL}/viajes`), fetch(`${API_URL}/notas`), fetch(`${API_URL}/registros-bascula`), fetch(`${API_URL}/pagos`), fetch(`${API_URL}/viajes-salida`)
     ])
-    acopiadores.value = await resAcop.json(); proveedores.value = await resProv.json(); clientes.value = await resCli.json(); 
-    tiposFruta.value = await resFruta.json(); viajes.value = await resViajes.json(); notas.value = await resNotas.json(); 
-    registrosBascula.value = await resRegistros.json(); pagos.value = await resPagos.json();
+    acopiadores.value = await resAcop.json(); proveedores.value = await resProv.json(); clientes.value = await resCli.json();
+    tiposFruta.value = await resFruta.json(); viajes.value = await resViajes.json(); notas.value = await resNotas.json();
+    registrosBascula.value = await resRegistros.json(); pagos.value = await resPagos.json(); viajesSalida.value = await resViajesSalida.json();
   } catch (e) { console.error('Error auto-update:', e) }
 }
 
@@ -141,10 +240,10 @@ const guardarEdicionCatalogo = async () => {
 const agregarNota = async () => {
   if (!nuevaNota.value.folio) return alert("El folio es obligatorio para identificar la nota.")
   cargando.value = true
-  try { 
-    await fetch(`${API_URL}/notas`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({...nuevaNota.value, viaje_id: null}) }); 
-    nuevaNota.value = { fecha: new Date().toISOString().split('T')[0], folio: '', proveedor_id: '', tipo_fruta_id: '', cantidad_cajas: '', tara_tarima: '', tara_caja: '', peso_bruto: '', peso_neto: 0, precio_kg: '', total_monetario: 0 }; 
-    await fetchCatalogos() 
+  try {
+    await fetch(`${API_URL}/notas`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({...nuevaNota.value, viaje_id: null}) });
+    nuevaNota.value = { fecha: getFechaLocal(), folio: '', proveedor_id: '', tipo_fruta_id: '', cantidad_cajas: '', tara_tarima: '', tara_caja: '', peso_bruto: '', peso_neto: 0, precio_kg: '', total_monetario: 0 };
+    await fetchCatalogos()
   } finally { cargando.value = false }
 }
 const eliminarNota = async (id) => { 
@@ -235,6 +334,19 @@ const guardarEdicionPago = async () => {
   cargando.value = true
   try { await fetch(`${API_URL}/pagos/${pagoEditando.value.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(pagoEditando.value) }); mostrarModalDetallePago.value = false; await fetchCatalogos() } finally { cargando.value = false }
 }
+
+const verDetalleSalida = async (viaje) => {
+  salidaSeleccionada.value = viaje
+  mostrarModalDetalleSalida.value = true
+
+  try {
+    const res = await fetch(`${API_URL}/viajes-salida/${viaje.id}/tarimas`)
+    tarimasDetalleSalida.value = await res.json()
+  } catch (e) {
+    console.error('Error cargando detalle de salida:', e)
+  }
+}
+
 const anularPago = async () => {
   if (!confirm("🚨 ¿ESTÁS SEGURO DE ANULAR ESTE PAGO?\n\nEl pago se eliminará y las facturas/notas asociadas volverán a aparecer deudas pendientes.")) return
   cargando.value = true
@@ -251,7 +363,7 @@ const nombreResponsableViaje = (v) => {
   }
 }
 
-const formatoViajeSelect = (v) => `Viaje #${v.id} - ${nombreResponsableViaje(v)} - ${new Date(v.fecha_entrada).toLocaleDateString()}`
+const formatoViajeSelect = (v) => `Viaje #${v.id} - ${nombreResponsableViaje(v)} - ${formatearFecha(v.fecha_entrada)}`
 
 const obtenerDuenoViaje = (viaje_id) => {
   const v = viajes.value.find(vi => vi.id === viaje_id)
@@ -296,12 +408,16 @@ const guardarEdicionPesada = async () => {
   <div class="min-h-screen bg-gray-50 p-6 md:p-12 relative">
     <div v-if="cargando" class="fixed inset-0 bg-white/60 backdrop-blur-sm z-50 flex items-center justify-center"><div class="bg-white p-6 rounded-3xl shadow-xl flex flex-col items-center"><div class="w-10 h-10 border-4 border-emerald-500 border-t-transparent rounded-full animate-spin mb-3"></div><span class="text-gray-700 font-medium">Procesando...</span></div></div>
 
-    <div class="flex justify-between items-center mb-8"><h1 class="text-4xl font-light tracking-tight text-gray-800 mt-1">Administración y Finanzas</h1><span class="text-xs font-bold text-gray-400 bg-white px-4 py-2 border rounded-full shadow-sm flex items-center"><span class="w-2 h-2 rounded-full bg-emerald-500 mr-2 animate-pulse"></span> ZONA B</span></div>
+    <div class="flex justify-between items-center mb-8">
+      <h1 class="text-4xl font-light tracking-tight text-gray-800 mt-1">Administración y Finanzas</h1>
+      <span class="text-xs font-bold text-gray-400 bg-white px-4 py-2 border rounded-full shadow-sm flex items-center"><span class="w-2 h-2 rounded-full bg-emerald-500 mr-2 animate-pulse"></span> OFICINA</span>
+    </div>
 
     <div class="flex flex-wrap gap-4 mb-8">
       <button @click="pestanaActual = 'notas'" :class="{'bg-emerald-500 text-white': pestanaActual === 'notas', 'bg-white text-gray-600': pestanaActual !== 'notas'}" class="px-5 py-2.5 rounded-2xl text-sm transition shadow-sm border font-medium">📝 Captura y Visualización de Notas</button>
       <button @click="pestanaActual = 'tarimas'" :class="{'bg-emerald-500 text-white': pestanaActual === 'tarimas', 'bg-white text-gray-600': pestanaActual !== 'tarimas'}" class="px-5 py-2.5 rounded-2xl text-sm transition shadow-sm border font-medium">📦 Gestión de Pesadas</button>
       <button @click="pestanaActual = 'conciliacion'; vistaConciliacion = 'historial'" :class="{'bg-emerald-500 text-white': pestanaActual === 'conciliacion', 'bg-white text-gray-600': pestanaActual !== 'conciliacion'}" class="px-5 py-2.5 rounded-2xl text-sm transition shadow-sm border font-medium">📊 Conciliación de Viajes</button>
+      <button @click="pestanaActual = 'salidas'" :class="{'bg-emerald-500 text-white': pestanaActual === 'salidas', 'bg-white text-gray-600': pestanaActual !== 'salidas'}" class="px-5 py-2.5 rounded-2xl text-sm transition shadow-sm border font-medium">🚚 Planear Salida</button>
       <button @click="pestanaActual = 'pagos'" :class="{'bg-emerald-500 text-white': pestanaActual === 'pagos', 'bg-white text-gray-600': pestanaActual !== 'pagos'}" class="px-5 py-2.5 rounded-2xl text-sm transition shadow-sm border font-medium">💰 Pagos</button>
       <button @click="pestanaActual = 'catalogos'" :class="{'bg-emerald-500 text-white': pestanaActual === 'catalogos', 'bg-white text-gray-600': pestanaActual !== 'catalogos'}" class="px-5 py-2.5 rounded-2xl text-sm transition shadow-sm border font-medium">📇 Catálogos Base</button>
     </div>
@@ -341,7 +457,7 @@ const guardarEdicionPesada = async () => {
             <thead class="bg-gray-50 border-b"><tr><th class="p-3">Fecha</th><th class="p-3">Folio</th><th class="p-3">Proveedor</th><th class="p-3">Fruta</th><th class="p-3 text-right">P. Bruto</th><th class="p-3 text-right">P. Neto</th><th class="p-3 text-right">Total</th><th class="p-3 text-right">Acción</th></tr></thead>
             <tbody>
               <tr v-for="n in notasLibres" :key="n.id" class="border-b hover:bg-gray-50">
-                <td class="p-3 text-gray-500 font-medium text-xs">{{ n.fecha ? new Date(n.fecha).toLocaleDateString() : 'N/A' }}</td>
+                <td class="p-3 text-gray-500 font-medium text-xs">{{ formatearFecha(n.fecha) }}</td>
                 <td class="p-3 font-mono font-bold text-gray-800">{{ n.folio || 'S/F' }}</td>
                 <td class="p-3 font-medium text-gray-800">{{ n.proveedor_nombre }}</td><td class="p-3">{{ n.fruta_nombre }}</td>
                 <td class="p-3 text-right">{{ formatearPeso(n.peso_bruto) }}</td>
@@ -364,9 +480,10 @@ const guardarEdicionPesada = async () => {
         </div>
         <div class="bg-white p-8 rounded-3xl border overflow-x-auto shadow-sm">
           <table class="min-w-full text-left text-sm text-gray-600">
-            <thead class="bg-gray-50 border-b"><tr><th class="p-3">Folio</th><th class="p-3">Viaje Asociado</th><th class="p-3">Proveedor</th><th class="p-3">Fruta</th><th class="p-3 text-center">Cajas</th><th class="p-3 text-right">Peso Neto</th><th class="p-3 text-right">Total</th><th class="p-3 text-center">Estado Pago</th></tr></thead>
+            <thead class="bg-gray-50 border-b"><tr><th class="p-3">Fecha</th><th class="p-3">Folio</th><th class="p-3">Viaje Asociado</th><th class="p-3">Proveedor</th><th class="p-3">Fruta</th><th class="p-3 text-center">Cajas</th><th class="p-3 text-right">Peso Neto</th><th class="p-3 text-right">Total</th><th class="p-3 text-center">Estado Pago</th></tr></thead>
             <tbody>
               <tr v-for="n in notasHistorialFiltradas" :key="n.id" class="border-b hover:bg-gray-50">
+                <td class="p-3 text-gray-500 font-medium text-xs">{{ formatearFecha(n.fecha) }}</td>
                 <td class="p-3 font-mono font-bold text-gray-800">{{ n.folio }}</td>
                 <td class="p-3 font-bold text-blue-600">{{ n.viaje_id ? 'Viaje #' + n.viaje_id : 'LIBRE (Sin Conciliar)' }}</td>
                 <td class="p-3 font-medium">{{ n.proveedor_nombre }}</td>
@@ -507,11 +624,81 @@ const guardarEdicionPesada = async () => {
             <thead><tr><th class="pb-2">Fecha</th><th class="pb-2">Proveedor</th><th class="pb-2 text-right">Monto</th><th class="pb-2 text-center">Acción</th></tr></thead>
             <tbody>
               <tr v-for="p in pagos.slice().reverse()" :key="p.id" class="border-t hover:bg-gray-50 transition">
-                <td class="py-3 text-xs font-bold text-gray-500">{{ p.fecha_pago ? new Date(p.fecha_pago).toLocaleDateString() : 'N/A' }}</td><td class="py-3 font-medium">{{ p.proveedor_nombre }} <span class="block text-[10px] text-gray-400 font-mono">{{ p.folio_pago }}</span></td><td class="py-3 text-right font-bold text-emerald-600">${{ p.monto_total }}</td><td class="py-3 text-center"><button @click="abrirDetallePago(p)" class="bg-blue-50 text-blue-600 px-3 py-1.5 rounded-lg text-xs font-bold hover:bg-blue-100 transition">Ver Detalle</button></td>
+                <td class="py-3 text-xs font-bold text-gray-500">{{ formatearFecha(p.fecha_pago) }}</td><td class="py-3 font-medium">{{ p.proveedor_nombre }} <span class="block text-[10px] text-gray-400 font-mono">{{ p.folio_pago }}</span></td><td class="py-3 text-right font-bold text-emerald-600">${{ p.monto_total }}</td><td class="py-3 text-center"><button @click="abrirDetallePago(p)" class="bg-blue-50 text-blue-600 px-3 py-1.5 rounded-lg text-xs font-bold hover:bg-blue-100 transition">Ver Detalle</button></td>
               </tr>
             </tbody>
           </table>
         </div>
+      </div>
+    </div>
+
+    <div v-if="pestanaActual === 'salidas'" class="space-y-6 animate-fade-in">
+      <h2 class="text-2xl font-light text-gray-700">🚚 Planeación de Salidas (Ventas)</h2>
+      
+      <!-- Formulario para planear nueva salida -->
+      <div class="bg-white p-8 rounded-3xl border shadow-sm mb-8">
+        <h3 class="text-lg font-bold text-gray-700 mb-4">Generar Nuevo Viaje de Salida</h3>
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-6">
+          <div>
+            <label class="block text-sm text-gray-500 mb-1 font-bold">Cliente</label>
+            <select v-model="nuevoViajeSalida.cliente_id" class="w-full border border-gray-200 p-3.5 rounded-2xl text-sm outline-none font-bold text-gray-700">
+              <option value="" disabled>Selecciona...</option>
+              <option v-for="c in clientes" :value="c.id" :key="c.id">{{ c.nombre }}</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-sm text-gray-500 mb-1 font-bold">Placa/Transporte</label>
+            <input v-model="nuevoViajeSalida.placa" placeholder="Ej. T-999" class="w-full border border-gray-200 p-3.5 rounded-2xl text-sm outline-none font-bold uppercase" />
+          </div>
+          <div>
+            <label class="block text-sm text-gray-500 mb-1 font-bold">Precio Pactado ($/kg)</label>
+            <input type="number" step="0.5" v-model="nuevoViajeSalida.precio_kg_venta" class="w-full border border-gray-200 p-3.5 rounded-2xl text-sm outline-none font-bold text-blue-600" />
+          </div>
+          <div class="flex items-end">
+            <button @click="crearViajeSalida" :disabled="cargando" class="w-full bg-emerald-500 text-white p-3.5 rounded-2xl font-bold hover:bg-emerald-600 disabled:opacity-50">
+              Crear Viaje
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="bg-white p-8 rounded-3xl border overflow-x-auto shadow-sm">
+        <h3 class="text-lg font-bold text-gray-700 mb-4">Viajes Planeados / Activos</h3>
+        <table class="min-w-full text-left text-sm text-gray-600">
+          <thead class="bg-gray-50 border-b">
+            <tr>
+              <th class="p-3">ID</th>
+              <th class="p-3">Cliente</th>
+              <th class="p-3">Placa</th>
+              <th class="p-3">Fecha Planeación</th>
+              <th class="p-3 text-right">Precio Pactado</th>
+              <th class="p-3 text-center">Estado</th>
+              <th class="p-3 text-center">Acción</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="viaje in viajesSalida" :key="viaje.id" class="border-b hover:bg-gray-50">
+              <td class="p-3 font-bold">#{{ viaje.id }}</td>
+              <td class="p-3">{{ viaje.cliente_nombre }}</td>
+              <td class="p-3 font-mono">{{ viaje.placa }}</td>
+              <td class="p-3">{{ formatearFecha(viaje.fecha_entrada) }}</td>
+              <td class="p-3 text-right font-bold text-blue-600">${{ viaje.precio_kg_venta || 0 }} / kg</td>
+              <td class="p-3 text-center">
+                <span :class="viaje.estado === 'ACTIVO' ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-700'" class="px-2 py-1 rounded text-xs font-bold">
+                  {{ viaje.estado === 'ACTIVO' ? 'PENDIENTE DE CARGA' : viaje.estado }}
+                </span>
+              </td>
+              <td class="p-3 text-center flex justify-center gap-2">
+                <button @click="verDetalleSalida(viaje)" class="bg-blue-50 text-blue-600 hover:bg-blue-100 font-bold px-3 py-1 rounded text-xs transition">Ver</button>
+                <button v-if="viaje.estado === 'ACTIVO'" @click="abrirEdicionSalida(viaje)" class="bg-amber-50 text-amber-600 hover:bg-amber-100 font-bold px-3 py-1 rounded text-xs transition">Editar</button>
+                <button v-if="viaje.estado === 'ACTIVO'" @click="eliminarSalida(viaje.id)" class="bg-red-50 text-red-600 hover:bg-red-100 font-bold px-3 py-1 rounded text-xs transition">Eliminar</button>
+              </td>
+            </tr>
+            <tr v-if="viajesSalida.length === 0">
+              <td colspan="7" class="p-6 text-center text-gray-400">No hay viajes de salida planeados</td>
+            </tr>
+          </tbody>
+        </table>
       </div>
     </div>
 
@@ -661,7 +848,7 @@ const guardarEdicionPesada = async () => {
         <div class="grid grid-cols-2 gap-6 mb-6">
           <div v-if="!modoEdicionPago" class="col-span-2 flex gap-6 p-4 bg-gray-50 rounded-2xl border">
             <div class="flex-1"><span class="block text-xs text-gray-400 font-bold uppercase">Folio / Referencia</span><span class="font-mono font-bold text-lg">{{ pagoSeleccionado.folio_pago }}</span></div>
-            <div class="flex-1"><span class="block text-xs text-gray-400 font-bold uppercase">Fecha</span><span class="font-bold text-lg">{{ pagoSeleccionado.fecha_pago ? new Date(pagoSeleccionado.fecha_pago).toLocaleDateString() : 'N/A' }}</span></div>
+            <div class="flex-1"><span class="block text-xs text-gray-400 font-bold uppercase">Fecha</span><span class="font-bold text-lg">{{ formatearFecha(pagoSeleccionado.fecha_pago) }}</span></div>
           </div>
           <template v-else>
             <div><label class="text-xs font-bold text-gray-500 uppercase ml-1">Folio / Referencia</label><input v-model="pagoEditando.folio_pago" class="border p-3.5 rounded-2xl w-full uppercase"></div>
@@ -701,6 +888,79 @@ const guardarEdicionPesada = async () => {
           </div>
         </div>
         <div class="flex gap-4 mt-8"><button @click="mostrarModalEdicionPesada = false" class="flex-1 bg-gray-100 py-3 rounded-xl font-bold text-gray-600">Cancelar</button><button @click="guardarEdicionPesada" class="flex-1 bg-blue-500 text-white font-bold py-3 rounded-xl shadow-md">Guardar Cambios</button></div>
+      </div>
+    </div>
+
+    <!-- Modal de detalle de salida -->
+    <div v-if="mostrarModalDetalleSalida" class="fixed inset-0 bg-gray-900 bg-opacity-60 flex items-center justify-center z-50 p-4">
+      <div class="bg-white rounded-3xl w-full max-w-2xl p-8 max-h-[90vh] overflow-y-auto">
+        <h2 class="text-2xl font-bold mb-4 text-gray-800">Detalle de Salida #{{ salidaSeleccionada.id }}</h2>
+        <div class="space-y-2 mb-6">
+          <p><span class="font-bold text-gray-500">Cliente:</span> {{ salidaSeleccionada.cliente_nombre }}</p>
+          <p><span class="font-bold text-gray-500">Placa:</span> {{ salidaSeleccionada.placa }}</p>
+          <p><span class="font-bold text-gray-500">Fecha:</span> {{ formatearFecha(salidaSeleccionada.fecha_salida) }}</p>
+          <p><span class="font-bold text-gray-500">Peso Total:</span> {{ formatearPeso(salidaSeleccionada.peso_total_fisico) }} kg</p>
+        </div>
+        <h3 class="font-bold text-gray-700 mb-3">Tarimas en esta salida:</h3>
+        <div class="max-h-60 overflow-y-auto mb-6 border rounded-xl">
+          <table class="min-w-full text-left text-sm">
+            <thead class="bg-gray-50 border-b">
+              <tr>
+                <th class="p-3">Tarima</th>
+                <th class="p-3">Fruta</th>
+                <th class="p-3 text-right">Peso Bruto</th>
+                <th class="p-3 text-right">Cajas</th>
+                <th class="p-3 text-right">Tara</th>
+                <th class="p-3 text-right">Peso Neto</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="tarima in tarimasDetalleSalida" :key="tarima.id" class="border-b">
+                <td class="p-3 font-bold">{{ tarima.numero_tarima_display }}</td>
+                <td class="p-3">{{ tarima.fruta_nombre }}</td>
+                <td class="p-3 text-right">{{ formatearPeso(tarima.peso_bruto) }} kg</td>
+                <td class="p-3 text-right">{{ tarima.cantidad_cajas }}</td>
+                <td class="p-3 text-right">{{ formatearPeso(tarima.tara_total) }} kg</td>
+                <td class="p-3 text-right font-bold text-orange-600">{{ formatearPeso(tarima.peso_neto) }} kg</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <button @click="mostrarModalDetalleSalida = false" class="w-full bg-gray-100 py-3 rounded-xl font-bold text-gray-600">
+          Cerrar
+        </button>
+      </div>
+    </div>
+
+    <!-- Modal Edición Viaje Salida -->
+    <div v-if="mostrarModalEdicionSalida" class="fixed inset-0 bg-gray-900 bg-opacity-60 flex items-center justify-center z-50 p-4">
+      <div class="bg-white rounded-3xl w-full max-w-md shadow-2xl overflow-hidden flex flex-col">
+        <div class="bg-amber-50 border-b border-amber-100 p-6 flex justify-between items-center">
+          <h2 class="text-2xl font-bold text-amber-800">Editar Viaje #{{ salidaEditando.id }}</h2>
+          <button @click="mostrarModalEdicionSalida = false" class="text-amber-400 hover:text-amber-600 text-3xl font-light">&times;</button>
+        </div>
+        <div class="p-6 overflow-y-auto max-h-[70vh]">
+          <form @submit.prevent="guardarEdicionSalida" class="space-y-4">
+            <div>
+              <label class="block text-sm font-bold text-gray-700 mb-1">Cliente</label>
+              <select v-model="salidaEditando.cliente_id" required class="w-full border border-gray-200 p-3 rounded-xl outline-none font-bold">
+                <option v-for="c in clientes" :value="c.id" :key="c.id">{{ c.nombre }}</option>
+              </select>
+            </div>
+            <div>
+              <label class="block text-sm font-bold text-gray-700 mb-1">Placa/Transporte</label>
+              <input v-model="salidaEditando.placa" required class="w-full border border-gray-200 p-3 rounded-xl outline-none font-bold uppercase" />
+            </div>
+            <div>
+              <label class="block text-sm font-bold text-gray-700 mb-1">Precio Pactado ($/kg)</label>
+              <input type="number" step="0.5" v-model="salidaEditando.precio_kg_venta" required class="w-full border border-gray-200 p-3 rounded-xl outline-none font-bold text-blue-600" />
+            </div>
+            <div class="flex gap-4 mt-6">
+              <button type="button" @click="mostrarModalEdicionSalida = false" class="flex-1 bg-gray-100 text-gray-600 p-3 rounded-xl font-bold hover:bg-gray-200 transition">Cancelar</button>
+              <button type="submit" :disabled="cargando" class="flex-1 bg-amber-500 text-white p-3 rounded-xl font-bold hover:bg-amber-600 transition disabled:opacity-50">Guardar</button>
+            </div>
+          </form>
+        </div>
       </div>
     </div>
   </div>

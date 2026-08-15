@@ -18,22 +18,32 @@ const COLUMNAS = 10
 
 const fetchDatos = async () => {
   try {
-    const [resFruta, resViajes, resRegistros, resInventario, resFrio, resAcop, resCli] = await Promise.all([
+    const promises = [
       fetch(`${API_URL}/tipos-fruta`), 
       fetch(`${API_URL}/viajes`), 
       fetch(`${API_URL}/registros-bascula`), 
-      fetch(`${API_URL}/inventario-frio`),  // NUEVO: Obtener inventario frío
+      fetch(`${API_URL}/inventario-frio`),
       fetch(`${API_URL}/cuarto-frio`),
       fetch(`${API_URL}/acopiadores`), 
       fetch(`${API_URL}/clientes`)
-    ])
-    tiposFruta.value = await resFruta.json()
-    viajes.value = await resViajes.json()
-    registros.value = await resRegistros.json()
-    inventarioFrio.value = await resInventario.json()
-    ubicacionesFrio.value = await resFrio.json()
-    acopiadores.value = await resAcop.json()
-    clientes.value = await resCli.json()
+    ]
+    const results = await Promise.allSettled(promises)
+    
+    // Función segura para extraer JSON o arreglo vacío
+    const getJson = async (result) => {
+      if (result.status === 'fulfilled' && result.value.ok) {
+        try { return await result.value.json() } catch(e) { return [] }
+      }
+      return []
+    }
+    
+    tiposFruta.value = await getJson(results[0])
+    viajes.value = await getJson(results[1])
+    registros.value = await getJson(results[2])
+    inventarioFrio.value = await getJson(results[3])
+    ubicacionesFrio.value = await getJson(results[4])
+    acopiadores.value = await getJson(results[5])
+    clientes.value = await getJson(results[6])
   } catch (e) { console.error('Error actualizando TV:', e) }
 }
 
@@ -170,17 +180,17 @@ const stats = computed(() => {
     const ocupadosFrio = ubicacionesFrio.value.filter(u => u.inventario_frio_id).length
     const pesoFrio = ubicacionesFrio.value.reduce((sum, u) => {
         const tarima = inventarioFrio.value.find(i => i.id === u.inventario_frio_id)
-        return sum + (tarima ? parseFloat(tarima.peso_neto) : 0)
+        return sum + (tarima ? parseFloat(tarima.peso_neto || 0) : 0)
     }, 0)
     
-    const pesoBodega = tarimasEnBodega.value.reduce((sum, t) => sum + parseFloat(t.peso_neto), 0)
+    const pesoBodega = tarimasEnBodega.value.reduce((sum, t) => sum + parseFloat(t.peso_neto || 0), 0)
 
     return { 
         ocupadosFrio, 
         disponibles: (FILAS * COLUMNAS) - ocupadosFrio, 
-        pesoTotalFrio: pesoFrio.toFixed(1),
+        pesoTotalFrio: pesoFrio.toFixed(2),
         cantidadBodega: tarimasEnBodega.value.length,
-        pesoTotalBodega: pesoBodega.toFixed(1)
+        pesoTotalBodega: pesoBodega.toFixed(2)
     }
 })
 </script>
@@ -234,11 +244,11 @@ const stats = computed(() => {
                         <div v-if="celda.ocupada.origen === 'UNION'" class="absolute top-0 right-0 bg-indigo-500 text-white text-[8px] font-black px-1.5 py-0.5 rounded-bl-lg z-10">UNI</div>
                         <div v-if="celda.ocupada.es_maquila" class="absolute top-0 left-0 bg-pink-500 text-white text-[8px] font-black px-1.5 py-0.5 rounded-br-lg z-10">MAQ</div>
                         
-                        <span class="text-[9px] font-black uppercase opacity-90 mt-2 truncate w-full text-center px-1 z-0">{{celda.ocupada.nombre_dueno}}</span>
-                        <span class="text-xs font-black leading-none my-1">{{celda.ocupada.fecha_corta}} | {{celda.ocupada.numero_tarima}}</span>
-                        <span class="text-xl font-black mb-1">{{parseFloat(celda.ocupada.peso_neto).toFixed(1)}}</span>
-                        <span class="text-[8px] font-bold bg-black/20 px-2 py-0.5 rounded-full uppercase truncate max-w-[90%]">{{celda.ocupada.fruta_nombre}}</span>
-                        <span v-if="celda.ocupada.cantidad_cajas" class="text-[7px] font-bold text-white/60 mt-0.5">{{celda.ocupada.cantidad_cajas}} cjs</span>
+                        <span class="text-[10px] font-black uppercase opacity-90 mt-2 truncate w-full text-center px-1 z-0">{{celda.ocupada.nombre_dueno}}</span>
+                        <span class="text-sm font-black leading-none my-1">{{celda.ocupada.fecha_corta}} | {{celda.ocupada.numero_tarima}}</span>
+                        <span class="text-2xl font-black mb-1 text-yellow-300">{{parseFloat(celda.ocupada.peso_neto || 0).toFixed(2)}}</span>
+                        <span class="text-[9px] font-bold bg-black/30 px-2 py-0.5 rounded-full uppercase truncate max-w-[90%]">{{celda.ocupada.fruta_nombre}}</span>
+                        <span v-if="celda.ocupada.cantidad_cajas" class="text-[8px] font-bold text-white/80 mt-0.5">{{celda.ocupada.cantidad_cajas}} cjs</span>
                     </template>
                     <template v-else>
                         <span class="text-gray-500 font-mono text-[10px] font-bold">{{celda.x}}-{{celda.y}}</span>
@@ -263,10 +273,10 @@ const stats = computed(() => {
                 <div v-if="t.origen === 'UNION'" class="absolute top-0 right-0 bg-indigo-500 text-white text-[7px] font-black px-1 rounded-bl-lg">UNI</div>
                 <div v-if="t.es_maquila" class="absolute top-0 left-0 bg-pink-500 text-white text-[7px] font-black px-1 rounded-br-lg">MAQ</div>
                 
-                <span class="text-[8px] font-black uppercase opacity-90 truncate w-full text-center mt-1">{{t.nombre_dueno}}</span>
-                <span class="text-xl font-black leading-none my-0.5">{{parseFloat(t.peso_neto).toFixed(1)}}</span>
-                <span class="text-[7px] font-bold bg-black/20 px-1.5 py-0.5 rounded-full uppercase truncate max-w-full">{{t.numero_tarima}} | {{t.fruta_nombre}}</span>
-                <span v-if="t.cantidad_cajas" class="text-[6px] font-bold text-white/60">{{t.cantidad_cajas}} cjs</span>
+                <span class="text-[9px] font-black uppercase opacity-90 truncate w-full text-center mt-1">{{t.nombre_dueno}}</span>
+                <span class="text-2xl font-black leading-none my-0.5 text-yellow-300">{{parseFloat(t.peso_neto || 0).toFixed(2)}}</span>
+                <span class="text-[8px] font-bold bg-black/30 px-1.5 py-0.5 rounded-full uppercase truncate max-w-full">{{t.numero_tarima}} | {{t.fruta_nombre}}</span>
+                <span v-if="t.cantidad_cajas" class="text-[7px] font-bold text-white/80">{{t.cantidad_cajas}} cjs</span>
             </div>
         </div>
     </div>

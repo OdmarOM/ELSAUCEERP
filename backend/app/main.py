@@ -557,6 +557,17 @@ def eliminar_tipo_fruta(fruta_id: int):
         return {"mensaje": "Tipo de fruta eliminado"}
 
 # ==========================================
+# FINANZAS Y CUENTAS POR COBRAR (CLIENTES)
+# ==========================================
+
+@app.get("/api/finanzas/cobros")
+def listar_todos_cobros():
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM cobro_cliente")
+        return [dict(row) for row in cursor.fetchall()]
+
+# ==========================================
 # NOTAS DE PROVEEDOR Y CONCILIACIÓN
 # ==========================================
 @app.get("/api/notas")
@@ -588,15 +599,24 @@ def crear_nota(nota: dict):
             peso_neto = max(0.0, p_bruto - tara_total) if p_bruto > 0 else float(nota.get('peso_neto', 0.0))
             total_monetario = peso_neto * precio
 
+            # Manejo de fecha: si viene solo YYYY-MM-DD, usar fecha local sin hora
+            fecha_nota = nota.get('fecha')
+            if fecha_nota and len(fecha_nota) == 10:  # Formato YYYY-MM-DD
+                # Usar la fecha tal cual viene del frontend (ya está en zona horaria local)
+                fecha_a_guardar = fecha_nota
+            else:
+                # Si no se proporciona fecha, usar fecha actual local
+                fecha_a_guardar = datetime.now().strftime('%Y-%m-%d')
+
             cursor.execute("""
                 INSERT INTO notaproveedor (
-                    viaje_id, proveedor_id, tipo_fruta_id, fecha, cantidad_cajas, 
-                    tara_tarima, tara_caja, peso_bruto, peso_neto, precio_kg, 
+                    viaje_id, proveedor_id, tipo_fruta_id, fecha, cantidad_cajas,
+                    tara_tarima, tara_caja, peso_bruto, peso_neto, precio_kg,
                     total_monetario, estado_pago, folio
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDIENTE', ?)
             """, (
                 nota.get('viaje_id'), nota['proveedor_id'], nota['tipo_fruta_id'],
-                nota.get('fecha', datetime.now().isoformat()), cajas, t_tarima, t_caja, p_bruto, 
+                fecha_a_guardar, cajas, t_tarima, t_caja, p_bruto,
                 peso_neto, precio, total_monetario, nota.get('folio', 'S/F')
             ))
             conn.commit()
@@ -616,20 +636,30 @@ def editar_nota(id: int, nota: dict):
             t_caja = float(nota.get('tara_caja', 0.0))
             p_bruto = float(nota.get('peso_bruto', 0.0))
             precio = float(nota.get('precio_kg', 0.0))
-            
+
             tara_total = t_tarima + (t_caja * cajas)
             peso_neto = max(0.0, p_bruto - tara_total) if p_bruto > 0 else float(nota.get('peso_neto', 0.0))
             total_monetario = peso_neto * precio
 
+            # Manejo de fecha: si viene solo YYYY-MM-DD, usar fecha local sin hora
+            fecha_nota = nota.get('fecha')
+            if fecha_nota and len(fecha_nota) == 10:  # Formato YYYY-MM-DD
+                fecha_a_guardar = fecha_nota
+            else:
+                # Mantener fecha existente si no se proporciona
+                cursor.execute("SELECT fecha FROM notaproveedor WHERE id = ?", (id,))
+                resultado = cursor.fetchone()
+                fecha_a_guardar = resultado['fecha'] if resultado else datetime.now().strftime('%Y-%m-%d')
+
             cursor.execute("""
-                UPDATE notaproveedor 
-                SET folio = ?, proveedor_id = ?, tipo_fruta_id = ?, 
-                    cantidad_cajas = ?, tara_tarima = ?, tara_caja = ?, 
+                UPDATE notaproveedor
+                SET folio = ?, proveedor_id = ?, tipo_fruta_id = ?,
+                    cantidad_cajas = ?, tara_tarima = ?, tara_caja = ?,
                     peso_bruto = ?, peso_neto = ?, precio_kg = ?, total_monetario = ?, fecha = ?
                 WHERE id = ?
-            """, (nota['folio'], nota['proveedor_id'], nota['tipo_fruta_id'], 
-                cajas, t_tarima, t_caja, p_bruto, peso_neto, precio, total_monetario, 
-                nota.get('fecha', datetime.now().isoformat()), id))
+            """, (nota['folio'], nota['proveedor_id'], nota['tipo_fruta_id'],
+                cajas, t_tarima, t_caja, p_bruto, peso_neto, precio, total_monetario,
+                fecha_a_guardar, id))
             conn.commit()
             return {"status": "ok"}
         except Exception as e:
@@ -688,25 +718,25 @@ def registrar_pesada(tarima: dict):
             # Insertar en Báscula (Histórico)
             cursor.execute("""
                 INSERT INTO registrobascula (
-                    viaje_id, tipo_fruta_id, numero_tarima, cantidad_cajas, 
+                    viaje_id, tipo_fruta_id, numero_tarima, cantidad_cajas,
                     peso_neto, peso_bruto, tara_total, tara_caja, tara_tarima,
                     fecha_hora, estado_ubicacion
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), 'EN_BODEGA')
             """, (
-                tarima['viaje_id'], tarima['tipo_fruta_id'], tarima['numero_tarima'], 
+                tarima['viaje_id'], tarima['tipo_fruta_id'], tarima['numero_tarima'],
                 tarima['cantidad_cajas'], tarima['peso_neto'], tarima.get('peso_bruto', 0),
                 tarima.get('tara_total', 0), tarima.get('tara_caja', 0), tarima.get('tara_tarima', 0)
             ))
-            
+
             registro_id = cursor.lastrowid
 
             # Crear entrada en Inventario Frío
             numero_display = f"T-{tarima['numero_tarima']}"
             cursor.execute("""
                 INSERT INTO inventario_frio (
-                    viaje_id, tipo_fruta_id, numero_tarima_display, 
-                    cantidad_cajas, peso_neto, fecha_ingreso, notas_referencia, 
+                    viaje_id, tipo_fruta_id, numero_tarima_display,
+                    cantidad_cajas, peso_neto, fecha_ingreso, notas_referencia,
                     origen, origen_id, activo
                 )
                 VALUES (?, ?, ?, ?, ?, datetime('now'), ?, 'PESADA', ?, 1)
@@ -715,15 +745,209 @@ def registrar_pesada(tarima: dict):
                 tarima['cantidad_cajas'], tarima['peso_neto'],
                 f"Registro de pesada #{registro_id}", registro_id
             ))
-            
+
             inventario_id = cursor.lastrowid
-            
+
             conn.commit()
             return {"status": "ok", "registro_id": registro_id, "inventario_id": inventario_id}
         except Exception as e:
             conn.rollback()
             logger.error(f"Error registrando pesada: {e}")
             raise HTTPException(status_code=500, detail="Error interno del servidor")
+
+@app.post("/api/registros-bascula-salida")
+def registrar_pesada_salida(tarima: dict):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        try:
+            # Verificar si es viaje de salida
+            cursor.execute("SELECT tipo FROM viaje WHERE id = ?", (tarima['viaje_id'],))
+            viaje = cursor.fetchone()
+            if not viaje or viaje['tipo'] != 'SALIDA':
+                raise HTTPException(status_code=400, detail="Este endpoint es solo para viajes de salida")
+
+            # Insertar en Báscula (Histórico de salida)
+            cursor.execute("""
+                INSERT INTO registrobascula (
+                    viaje_id, tipo_fruta_id, numero_tarima, cantidad_cajas,
+                    peso_neto, peso_bruto, tara_total, tara_caja, tara_tarima,
+                    fecha_hora, estado_ubicacion
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), 'SALIDA')
+            """, (
+                tarima['viaje_id'], tarima['tipo_fruta_id'], tarima['numero_tarima'],
+                tarima['cantidad_cajas'], tarima['peso_neto'], tarima.get('peso_bruto', 0),
+                tarima.get('tara_total', 0), tarima.get('tara_caja', 0), tarima.get('tara_tarima', 0)
+            ))
+
+            registro_id = cursor.lastrowid
+
+            # Si viene de una tarima del frío, darla de baja
+            if tarima.get('inventario_frio_id'):
+                # Marcar como inactiva en inventario_frio y guardar seguimiento
+                cursor.execute("""
+                    UPDATE inventario_frio
+                    SET activo = 0, fecha_salida = datetime('now'), viaje_salida_id = ?, peso_salida = ?
+                    WHERE id = ?
+                """, (tarima['viaje_id'], tarima['peso_neto'], tarima['inventario_frio_id']))
+
+                # Se comenta la eliminación del cuarto frío para permitir deshacer la acción
+                # cursor.execute("DELETE FROM cuartofrio WHERE inventario_frio_id = ?", (tarima['inventario_frio_id'],))
+
+                # Agregar a viaje_salida_tarima
+                cursor.execute("""
+                    INSERT INTO viaje_salida_tarima (
+                        viaje_id, inventario_frio_id, peso_salida, observaciones
+                    )
+                    VALUES (?, ?, ?, ?)
+                """, (
+                    tarima['viaje_id'],
+                    tarima['inventario_frio_id'],
+                    tarima['peso_neto'],
+                    tarima.get('observaciones', '')
+                ))
+            else:
+                # Crear tarima manual de salida (no viene del frío)
+                numero_display = f"S-{tarima['numero_tarima']}"
+                cursor.execute("""
+                    INSERT INTO inventario_frio (
+                        viaje_id, tipo_fruta_id, numero_tarima_display,
+                        cantidad_cajas, peso_neto, fecha_ingreso, notas_referencia,
+                        origen, origen_id, activo, fecha_salida
+                    )
+                    VALUES (?, ?, ?, ?, ?, datetime('now'), ?, 'SALIDA_MANUAL', ?, 0, datetime('now'))
+                """, (
+                    tarima['viaje_id'], tarima['tipo_fruta_id'], numero_display,
+                    tarima['cantidad_cajas'], tarima['peso_neto'],
+                    f"Salida manual #{registro_id}", registro_id
+                ))
+
+                inventario_id = cursor.lastrowid
+
+                # Agregar a viaje_salida_tarima
+                cursor.execute("""
+                    INSERT INTO viaje_salida_tarima (
+                        viaje_id, inventario_frio_id, peso_salida, observaciones
+                    )
+                    VALUES (?, ?, ?, ?)
+                """, (
+                    tarima['viaje_id'],
+                    inventario_id,
+                    tarima['peso_neto'],
+                    tarima.get('observaciones', 'Salida manual')
+                ))
+
+            conn.commit()
+            return {"status": "ok", "registro_id": registro_id}
+        except HTTPException as he:
+            conn.rollback()
+            raise he
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Error registrando pesada de salida: {e}")
+            raise HTTPException(status_code=500, detail="Error interno del servidor")
+
+@app.get("/api/registros-bascula-salida")
+def listar_registros_bascula_salida():
+    """Listar todas las tarimas de salida (para dashboard y reportes)"""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT vst.*, i.numero_tarima_display, i.cantidad_cajas, i.peso_neto as peso_origen,
+                   i.tipo_fruta_id, t.nombre as fruta_nombre
+            FROM viaje_salida_tarima vst
+            LEFT JOIN inventario_frio i ON vst.inventario_frio_id = i.id
+            LEFT JOIN tipofruta t ON i.tipo_fruta_id = t.id
+        """)
+        return cursor.fetchall()
+
+@app.put("/api/registros-bascula-salida/{vst_id}")
+def editar_tarima_salida(vst_id: int, data: dict):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        try:
+            peso_neto = data.get('peso_neto')
+            cantidad_cajas = data.get('cantidad_cajas')
+            tipo_fruta_id = data.get('tipo_fruta_id')
+            
+            cursor.execute("SELECT * FROM viaje_salida_tarima WHERE id = ?", (vst_id,))
+            vst = cursor.fetchone()
+            if not vst:
+                raise HTTPException(status_code=404, detail="No encontrado")
+                
+            cursor.execute("UPDATE viaje_salida_tarima SET peso_salida = ? WHERE id = ?", (peso_neto, vst_id))
+            cursor.execute("SELECT * FROM inventario_frio WHERE id = ?", (vst['inventario_frio_id'],))
+            inv = cursor.fetchone()
+            
+            if inv:
+                cursor.execute("""
+                    UPDATE inventario_frio 
+                    SET peso_salida = ?, peso_neto = ?, cantidad_cajas = ?, tipo_fruta_id = ?
+                    WHERE id = ?
+                """, (peso_neto, peso_neto, cantidad_cajas, tipo_fruta_id, inv['id']))
+                
+                if inv['origen'] == 'SALIDA_MANUAL':
+                    cursor.execute("""
+                        UPDATE registrobascula 
+                        SET peso_neto = ?, cantidad_cajas = ?, tipo_fruta_id = ?
+                        WHERE id = ?
+                    """, (peso_neto, cantidad_cajas, tipo_fruta_id, inv['origen_id']))
+                else:
+                    cursor.execute("""
+                        UPDATE registrobascula 
+                        SET peso_neto = ?, cantidad_cajas = ?, tipo_fruta_id = ?
+                        WHERE id = (
+                            SELECT id FROM registrobascula 
+                            WHERE viaje_id = ? AND estado_ubicacion = 'SALIDA'
+                            ORDER BY id DESC LIMIT 1
+                        )
+                    """, (peso_neto, cantidad_cajas, tipo_fruta_id, vst['viaje_id']))
+            conn.commit()
+            return {"status": "ok"}
+        except HTTPException as he:
+            raise he
+        except Exception as e:
+            conn.rollback()
+            raise HTTPException(status_code=500, detail="Error interno")
+
+@app.delete("/api/registros-bascula-salida/{vst_id}")
+def eliminar_tarima_salida(vst_id: int):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        try:
+            cursor.execute("SELECT * FROM viaje_salida_tarima WHERE id = ?", (vst_id,))
+            vst = cursor.fetchone()
+            if not vst:
+                raise HTTPException(status_code=404, detail="No encontrado")
+            
+            cursor.execute("SELECT * FROM inventario_frio WHERE id = ?", (vst['inventario_frio_id'],))
+            inv = cursor.fetchone()
+            
+            cursor.execute("DELETE FROM viaje_salida_tarima WHERE id = ?", (vst_id,))
+            
+            if inv:
+                if inv['origen'] == 'SALIDA_MANUAL':
+                    cursor.execute("DELETE FROM inventario_frio WHERE id = ?", (inv['id'],))
+                    cursor.execute("DELETE FROM registrobascula WHERE id = ?", (inv['origen_id'],))
+                else:
+                    cursor.execute("""
+                        UPDATE inventario_frio
+                        SET activo = 1, fecha_salida = NULL, viaje_salida_id = NULL, peso_salida = NULL
+                        WHERE id = ?
+                    """, (inv['id'],))
+                    cursor.execute("""
+                        DELETE FROM registrobascula 
+                        WHERE id = (
+                            SELECT id FROM registrobascula 
+                            WHERE viaje_id = ? AND peso_neto = ? AND estado_ubicacion = 'SALIDA'
+                            ORDER BY id DESC LIMIT 1
+                        )
+                    """, (vst['viaje_id'], vst['peso_salida']))
+            conn.commit()
+            return {"status": "ok"}
+        except Exception as e:
+            conn.rollback()
+            raise HTTPException(status_code=500, detail="Error interno")
 
 @app.put("/api/registros-bascula/{id}")
 def editar_tarima(id: int, data: dict):
@@ -1325,6 +1549,186 @@ def listar_tarimas_enviadas():
         return data
 
 # ==========================================
+# VIAJES DE SALIDA
+# ==========================================
+@app.get("/api/viajes-salida")
+def listar_viajes_salida():
+    """Listar todos los viajes de salida"""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT v.*, c.nombre as cliente_nombre
+            FROM viaje v
+            LEFT JOIN cliente c ON v.cliente_id = c.id
+            WHERE v.tipo_operacion = 'SALIDA'
+            ORDER BY v.fecha_salida DESC
+        """)
+        data = [dict(row) for row in cursor.fetchall()]
+        return data
+
+@app.post("/api/viajes-salida", status_code=201)
+def crear_viaje_salida(viaje: dict):
+    """Crear un nuevo viaje de salida"""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        try:
+            fecha_actual = datetime.now().strftime('%Y-%m-%d')
+            cursor.execute("""
+                INSERT INTO viaje (
+                    cliente_id, placa, fecha_entrada, fecha_salida, estado, tipo, tipo_operacion, precio_kg_venta
+                ) VALUES (?, ?, ?, ?, 'ACTIVO', 'SALIDA', 'SALIDA', ?)
+            """, (
+                viaje['cliente_id'],
+                viaje.get('placa', 'N/A'),
+                fecha_actual,
+                fecha_actual,
+                viaje.get('precio_kg_venta', 0.0)
+            ))
+            conn.commit()
+            nuevo_id = cursor.lastrowid
+            return {"id": nuevo_id, **viaje}
+        except Exception as e:
+            logger.error(f"Error creando viaje de salida: {e}")
+            raise HTTPException(status_code=500, detail="Error interno del servidor")
+
+@app.put("/api/viajes-salida/{id}")
+def actualizar_viaje_salida(id: int, viaje: dict):
+    """Actualizar un viaje de salida"""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        try:
+            cursor.execute("""
+                UPDATE viaje
+                SET cliente_id = ?, placa = ?, estado = ?, precio_kg_venta = ?
+                WHERE id = ?
+            """, (viaje['cliente_id'], viaje.get('placa', 'N/A'), viaje.get('estado', 'ACTIVO'), viaje.get('precio_kg_venta', 0.0), id))
+            conn.commit()
+            return {"status": "ok"}
+        except Exception as e:
+            logger.error(f"Error actualizando viaje de salida {id}: {e}")
+            raise HTTPException(status_code=500, detail="Error interno del servidor")
+
+@app.delete("/api/viajes-salida/{id}")
+def eliminar_viaje_salida(id: int):
+    """Eliminar un viaje de salida"""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        try:
+            # Primero eliminar las relaciones de tarimas
+            cursor.execute("DELETE FROM viaje_salida_tarima WHERE viaje_id = ?", (id,))
+            # Luego eliminar el viaje
+            cursor.execute("DELETE FROM viaje WHERE id = ?", (id,))
+            conn.commit()
+            return {"mensaje": "Viaje de salida eliminado"}
+        except Exception as e:
+            logger.error(f"Error eliminando viaje de salida {id}: {e}")
+            raise HTTPException(status_code=500, detail="Error interno del servidor")
+
+@app.post("/api/viajes-salida/{viaje_id}/agregar-tarima")
+def agregar_tarima_salida(viaje_id: int, data: dict):
+    """Agregar una tarima a un viaje de salida"""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        try:
+            inventario_frio_id = data['inventario_frio_id']
+            peso_salida = data.get('peso_salida')
+            observaciones = data.get('observaciones', '')
+            
+            # Verificar que la tarima exista y esté activa
+            cursor.execute("SELECT * FROM inventario_frio WHERE id = ? AND activo = 1", (inventario_frio_id,))
+            tarima = cursor.fetchone()
+            if not tarima:
+                raise HTTPException(status_code=404, detail="Tarima no encontrada o ya no está activa")
+            
+            # Agregar relación viaje-tarima
+            cursor.execute("""
+                INSERT INTO viaje_salida_tarima (viaje_id, inventario_frio_id, peso_salida, observaciones)
+                VALUES (?, ?, ?, ?)
+            """, (viaje_id, inventario_frio_id, peso_salida, observaciones))
+            
+            # Marcar tarima como inactiva
+            cursor.execute("UPDATE inventario_frio SET activo = 0 WHERE id = ?", (inventario_frio_id,))
+            
+            # Se comenta la eliminación del cuarto frío para permitir deshacer la acción
+            # cursor.execute("DELETE FROM cuartofrio WHERE inventario_frio_id = ?", (inventario_frio_id,))
+            
+            conn.commit()
+            return {"mensaje": "Tarima agregada al viaje de salida"}
+        except HTTPException as he:
+            raise he
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Error agregando tarima a viaje de salida: {e}")
+            raise HTTPException(status_code=500, detail="Error interno del servidor")
+
+@app.get("/api/viajes-salida/{viaje_id}/tarimas")
+def listar_tarimas_salida(viaje_id: int):
+    """Listar las tarimas de un viaje de salida"""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT vst.*, i.numero_tarima_display, i.cantidad_cajas, i.peso_neto,
+                   t.nombre as fruta_nombre
+            FROM viaje_salida_tarima vst
+            JOIN inventario_frio i ON vst.inventario_frio_id = i.id
+            LEFT JOIN tipofruta t ON i.tipo_fruta_id = t.id
+            WHERE vst.viaje_id = ?
+            ORDER BY vst.id
+        """, (viaje_id,))
+        data = [dict(row) for row in cursor.fetchall()]
+        return data
+
+@app.put("/api/viajes-salida/{viaje_id}/cerrar")
+def cerrar_viaje_salida(viaje_id: int):
+    """Cerrar un viaje de salida y generar cuenta por cobrar"""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        try:
+            # Calcular peso total
+            cursor.execute("""
+                SELECT SUM(peso_salida) as total
+                FROM viaje_salida_tarima
+                WHERE viaje_id = ?
+            """, (viaje_id,))
+            resultado = cursor.fetchone()
+            peso_total = resultado['total'] or 0
+            
+            # Actualizar viaje y traer el precio y cliente
+            cursor.execute("""
+                UPDATE viaje
+                SET estado = 'CERRADO', peso_total_fisico = ?
+                WHERE id = ?
+            """, (peso_total, viaje_id))
+            
+            # Limpiar el cuarto frío definitivamente de las tarimas que ya salieron
+            cursor.execute("""
+                DELETE FROM cuartofrio
+                WHERE inventario_frio_id IN (
+                    SELECT inventario_frio_id 
+                    FROM viaje_salida_tarima 
+                    WHERE viaje_id = ?
+                )
+            """, (viaje_id,))
+            
+            cursor.execute("SELECT cliente_id, precio_kg_venta FROM viaje WHERE id = ?", (viaje_id,))
+            v = cursor.fetchone()
+            
+            # Generar cuenta por cobrar si hay cliente y precio
+            if v and v['cliente_id'] and v['precio_kg_venta'] > 0:
+                monto_total = peso_total * v['precio_kg_venta']
+                cursor.execute("""
+                    INSERT INTO cuenta_cobrar (cliente_id, viaje_salida_id, monto_total, saldo_pendiente, estado)
+                    VALUES (?, ?, ?, ?, 'PENDIENTE')
+                """, (v['cliente_id'], viaje_id, monto_total, monto_total))
+
+            conn.commit()
+            return {"mensaje": "Viaje de salida cerrado y cuenta generada", "peso_total": peso_total}
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Error cerrando viaje de salida {viaje_id}: {e}")
+            raise HTTPException(status_code=500, detail="Error interno del servidor")
+
+# ==========================================
 # REACTIVAR TARIMA (SI SE NECESITA)
 # ==========================================
 @app.post("/api/inventario-frio/{id}/reactivar")
@@ -1345,3 +1749,102 @@ def reactivar_tarima(id: int):
             conn.rollback()
             logger.error(f"Error reactivando tarima {id}: {e}")
             raise HTTPException(500, detail="Error interno del servidor")
+
+class ViajeSalidaCreate(BaseModel):
+    cliente_id: Optional[int] = None
+    placa: str = ""
+    precio_kg_venta: float = 0.0
+
+class TarimasSalidaRequest(BaseModel):
+    inventario_frio_ids: List[int]
+    peso_salida_total: float
+    observaciones: str = ""
+
+class CobroClienteCreate(BaseModel):
+    monto_cobrado: float
+    metodo_pago: str
+    referencia: str = ""
+
+class PesadaSalidaRequest(BaseModel):
+    viaje_id: int
+    inventario_frio_id: Optional[int] = None
+    peso_neto: float
+    observaciones: str = ""
+    
+    # Agregado para compatibilidad con ZonaA.vue
+    tipo_fruta_id: Optional[int] = None
+    cantidad_cajas: Optional[int] = None
+    tara_total: Optional[float] = None
+    promedio_peso_caja: Optional[float] = None
+
+
+@app.post("/api/viajes/salida")
+def crear_viaje_salida(viaje: ViajeSalidaCreate):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        fecha_actual = datetime.now().isoformat()
+        try:
+            cursor.execute(
+                "INSERT INTO viaje (cliente_id, placa, fecha_entrada, estado, tipo_operacion, tipo, precio_kg_venta) VALUES (?, ?, ?, 'ACTIVO', 'SALIDA', 'SALIDA', ?)",
+                (viaje.cliente_id, viaje.placa, fecha_actual, viaje.precio_kg_venta)
+            )
+            conn.commit()
+            nuevo_id = cursor.lastrowid
+            return {"id": nuevo_id, "mensaje": "Viaje de salida creado"}
+        except Exception as e:
+            conn.rollback()
+            raise HTTPException(status_code=500, detail="Error interno del servidor")
+
+@app.post("/api/registros-bascula-salida")
+def registrar_pesada_salida(req: PesadaSalidaRequest):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        try:
+            if req.inventario_frio_id:
+                cursor.execute("UPDATE inventario_frio SET activo = 0, fecha_salida = CURRENT_TIMESTAMP, viaje_salida_id = ? WHERE id = ?", (req.viaje_id, req.inventario_frio_id))
+                cursor.execute("DELETE FROM cuartofrio WHERE inventario_frio_id = ?", (req.inventario_frio_id,))
+            
+            cursor.execute("INSERT INTO viaje_salida_tarima (viaje_id, inventario_frio_id, peso_salida, observaciones) VALUES (?, ?, ?, ?)", (req.viaje_id, req.inventario_frio_id, req.peso_neto, req.observaciones))
+            conn.commit()
+            return {"mensaje": "Pesada de salida registrada"}
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Error registrando pesada salida: {e}")
+            raise HTTPException(status_code=500, detail="Error interno")
+
+@app.get("/api/finanzas/cobrar")
+def listar_cuentas_cobrar():
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT cc.*, c.nombre as cliente_nombre, v.placa as viaje_placa FROM cuenta_cobrar cc JOIN cliente c ON cc.cliente_id = c.id LEFT JOIN viaje v ON cc.viaje_salida_id = v.id ORDER BY cc.fecha_emision DESC")
+        return [dict(row) for row in cursor.fetchall()]
+
+@app.post("/api/finanzas/cobrar/{id}/pagar")
+def registrar_cobro_cliente(id: int, cobro: CobroClienteCreate):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        try:
+            cursor.execute("SELECT saldo_pendiente FROM cuenta_cobrar WHERE id = ?", (id,))
+            cuenta = cursor.fetchone()
+            if not cuenta: raise HTTPException(status_code=404, detail="Cuenta no encontrada")
+            cursor.execute("INSERT INTO cobro_cliente (cuenta_cobrar_id, monto_cobrado, metodo_pago, referencia) VALUES (?, ?, ?, ?)", (id, cobro.monto_cobrado, cobro.metodo_pago, cobro.referencia))
+            cursor.execute("UPDATE cuenta_cobrar SET saldo_pendiente = saldo_pendiente - ?, estado = CASE WHEN (saldo_pendiente - ?) <= 0 THEN 'PAGADO' ELSE 'PENDIENTE' END WHERE id = ?", (cobro.monto_cobrado, cobro.monto_cobrado, id))
+            conn.commit()
+            return {"mensaje": "Cobro registrado"}
+        except Exception as e:
+            conn.rollback()
+            raise HTTPException(status_code=500, detail="Error interno")
+
+@app.get("/api/finanzas/cobrar/{id}/historial")
+def listar_historial_cobros(id: int):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM cobro_cliente WHERE cuenta_cobrar_id = ? ORDER BY fecha_cobro DESC", (id,))
+        return [dict(row) for row in cursor.fetchall()]
+
+@app.get("/api/finanzas/pagar")
+def listar_cuentas_pagar():
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT p.id as proveedor_id, p.nombre as proveedor_nombre, SUM(CASE WHEN n.estado_pago = 'PENDIENTE' THEN n.total_monetario ELSE 0 END) as total_deuda, COUNT(CASE WHEN n.estado_pago = 'PENDIENTE' THEN n.id END) as notas_pendientes FROM proveedor p LEFT JOIN notaproveedor n ON p.id = n.proveedor_id GROUP BY p.id HAVING total_deuda > 0")
+        return [dict(row) for row in cursor.fetchall()]
